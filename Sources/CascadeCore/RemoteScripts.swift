@@ -10,7 +10,7 @@ public enum RemoteScripts {
     test "$(id -u)" = 0 || fail 'Нужны root или sudo без запроса пароля.'
     """
 
-    public static func preflight(sni: String, peer: String, role: String) -> String {
+    public static func preflight(sni: String, peer: String, role: String, tlsCheck: String? = nil) -> String {
         header + "\n" + """
         . /etc/os-release
         case "$ID:$VERSION_ID" in ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;; *) fail 'Поддерживаются Ubuntu 22.04/24.04/26.04 и Debian 12/13.' ;; esac
@@ -19,6 +19,9 @@ public enum RemoteScripts {
         command -v ss >/dev/null || fail 'Не найден ss. Установите iproute2.'
         command -v openssl >/dev/null || fail 'Не найден openssl.'
         command -v timeout >/dev/null || fail 'Не найден timeout.'
+        if test -r /proc/sys/net/ipv6/bindv6only; then
+          test "$(cat /proc/sys/net/ipv6/bindv6only)" = 0 || fail 'Для двойного IPv4/IPv6 listener требуется net.ipv6.bindv6only=0. Настройте VPS и повторите проверку.'
+        fi
         for p in /etc/bp-cascade /opt/bp-cascade; do
           test ! -L "$p" || fail 'Обнаружена символическая ссылка вместо каталога Cascade.'
           if test -e "$p"; then
@@ -30,17 +33,16 @@ public enum RemoteScripts {
         fi
         if test -f /etc/bp-cascade/managed-by-cascade; then
           test "$(cat /etc/bp-cascade/role)" = \(quote(role)) || fail 'На сервере установлена другая роль каскада.'
-          test "$(cat /etc/bp-cascade/peer)" = \(quote(peer)) || fail 'Этот сервер уже связан с другим VPS. Перезапись остановлена.'
+          test "$(cat /etc/bp-cascade/peer)" = \(quote(IPAddress.canonical(peer) ?? peer)) || fail 'Этот сервер уже связан с другим VPS. Перезапись остановлена.'
         fi
-        listeners="$(ss -H -ltnp 'sport = :443')"
+        listeners="$(ss -H -ltnp 'sport = :443'; ss -H -lunp 'sport = :443')"
         if test -n "$listeners"; then
           pid="$(systemctl show bp-cascade.service -p MainPID --value 2>/dev/null || true)"
-          test -n "$pid" && test "$pid" != 0 && printf '%s' "$listeners" | grep -q "pid=$pid," || fail 'TCP-порт 443 занят другим сервисом. Ничего не остановлено.'
+          test -n "$pid" && test "$pid" != 0 && printf '%s' "$listeners" | grep -q "pid=$pid," || fail 'Порт 443 TCP/UDP занят другим сервисом. Ничего не остановлено.'
           other="$(printf '%s\\n' "$listeners" | grep -v "pid=$pid," || true)"
           test -z "$other" || fail 'На порту 443 обнаружен дополнительный сервис.'
         fi
-        tls="$(timeout 18 openssl s_client -connect \(quote(sni + ":443")) -servername \(quote(sni)) -tls1_3 </dev/null 2>&1)" || fail 'TLS-сайт REALITY недоступен с сервера. Выберите другой в дополнительных настройках.'
-        printf '%s' "$tls" | grep -q 'TLSv1.3' || fail 'TLS-сайт не подтвердил TLS 1.3.'
+        \(tlsCheck ?? ProtocolScripts.tls(ConnectionSettings(), realityName: sni))
         printf 'OS=%s %s\\nARCH=%s\\n' "$ID" "$VERSION_ID" "$(uname -m)"
         if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then echo 'UFW=active'; fi
         if test -f /etc/bp-cascade/config.json; then
@@ -52,11 +54,13 @@ public enum RemoteScripts {
         """
     }
 
-    public static func install(config: Data, role: String, peer: String, sni: String, transaction: String, expectedDigest: String?) -> String {
+    public static func install(config: Data, role: String, peer: String, sni: String, transaction: String, expectedDigest: String?, tlsCheck: String? = nil, network: String = "tcp", sources: [String]? = nil) -> String {
         let payload = config.base64EncodedString()
-        return preflight(sni: sni, peer: peer, role: role) + "\n" + """
+        return preflight(sni: sni, peer: peer, role: role, tlsCheck: tlsCheck) + "\n" + """
+        network=\(quote(network))
+        sources=\(quote((sources ?? [peer]).joined(separator: " ")))
         role=\(quote(role))
-        peer=\(quote(peer))
+        peer=\(quote(IPAddress.canonical(peer) ?? peer))
         command -v flock >/dev/null || fail 'Не найден flock (util-linux).'
         exec 9>/run/lock/bp-cascade.lock
         flock -n 9 || fail 'Другая установка Cascade уже выполняется.'
@@ -68,7 +72,7 @@ public enum RemoteScripts {
           test "$actual" = "$expected" || fail 'Конфиг изменился после проверки. Проверьте серверы заново.'
         fi
         # Recheck immediately before any deployment, even after a successful preflight.
-        listeners="$(ss -H -ltnp 'sport = :443')"
+        listeners="$(ss -H -ltnp 'sport = :443'; ss -H -lunp 'sport = :443')"
         if test -n "$listeners"; then
           test -f /etc/bp-cascade/managed-by-cascade || fail 'Порт 443 занят.'
           pid="$(systemctl show bp-cascade.service -p MainPID --value 2>/dev/null || true)"
@@ -92,7 +96,7 @@ public enum RemoteScripts {
         tar -xzf "$tmp/core.tar.gz" -C "$tmp"
         bin="$tmp/sing-box-\(Config.version)-linux-$arch/sing-box"
         printf '%s' \(quote(payload)) | base64 -d > "$tmp/config.json"
-        "$bin" check -c "$tmp/config.json"
+        LD_LIBRARY_PATH="$(dirname "$bin")" "$bin" check -c "$tmp/config.json"
         getent group bp-cascade >/dev/null || groupadd --system bp-cascade
         id bp-cascade >/dev/null 2>&1 || useradd --system --gid bp-cascade --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin bp-cascade
         install -d -m 700 /etc/bp-cascade
@@ -113,8 +117,10 @@ public enum RemoteScripts {
         backup="$(cd "$(dirname "$0")" && pwd)"
         test ! -f "$backup/rolled-back" || exit 0
         if test -f "$backup/ufw-added"; then
-          rule="$(cat "$backup/ufw-added")"
-          if test "$rule" = entry; then ufw --force delete allow 443/tcp; else ufw --force delete allow from "$rule" to any port 443 proto tcp; fi
+          while read -r rule proto; do
+            proto="${proto:-tcp}"
+            if test "$rule" = entry; then ufw --force delete allow "443/$proto"; else ufw --force delete allow from "$rule" to any port 443 proto "$proto"; fi
+          done < "$backup/ufw-added"
         fi
         systemctl stop bp-cascade.service || true
         if test "$(cat "$backup/kind")" = existing; then
@@ -140,6 +146,10 @@ public enum RemoteScripts {
         restore_on_error() { code=$?; trap - ERR HUP TERM; bash "$backup/rollback.sh" >&2 || echo 'ROLLBACK_FAILED' >&2; exit "$code"; }
         trap restore_on_error ERR HUP TERM
         install -d -m 755 /opt/bp-cascade
+        if test -f "$(dirname "$bin")/libcronet.so"; then
+          install -m 755 "$(dirname "$bin")/libcronet.so" /opt/bp-cascade/libcronet.so.next
+          mv /opt/bp-cascade/libcronet.so.next /opt/bp-cascade/libcronet.so
+        fi
         install -m 755 "$bin" /opt/bp-cascade/sing-box-\(Config.version).next
         mv /opt/bp-cascade/sing-box-\(Config.version).next /opt/bp-cascade/sing-box-\(Config.version)
         touch /etc/bp-cascade/managed-by-cascade
@@ -158,6 +168,8 @@ public enum RemoteScripts {
         [Service]
         User=bp-cascade
         Group=bp-cascade
+        WorkingDirectory=/opt/bp-cascade
+        Environment=LD_LIBRARY_PATH=/opt/bp-cascade
         ExecStart=/opt/bp-cascade/sing-box-\(Config.version) run -c /etc/bp-cascade/config.json
         Restart=on-failure
         RestartSec=3
@@ -174,12 +186,21 @@ public enum RemoteScripts {
         UNIT
         chmod 644 /etc/systemd/system/bp-cascade.service
         if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
+          if printf '%s' "$sources" | grep -q ':'; then
+            grep -Eq '^IPV6=yes$' /etc/default/ufw || fail 'Для IPv6 включите поддержку IPv6 в UFW и повторите проверку.'
+          fi
           if test "$role" = entry; then
-            result="$(ufw allow 443/tcp)"
-            if printf '%s' "$result" | grep -q 'Rule added'; then echo entry > "$backup/ufw-added"; fi
+            families='0.0.0.0/0'
+            if printf '%s' "$sources" | grep -q ':'; then families='0.0.0.0/0 ::/0'; fi
+            for source in $families; do
+              result="$(ufw allow from "$source" to any port 443 proto "$network")"
+              if printf '%s' "$result" | grep -q 'Rule added'; then printf '%s %s\\n' "$source" "$network" >> "$backup/ufw-added"; fi
+            done
           else
-            result="$(ufw allow from "$peer" to any port 443 proto tcp)"
-            if printf '%s' "$result" | grep -q 'Rule added'; then printf '%s\\n' "$peer" > "$backup/ufw-added"; fi
+            for source in $sources; do
+              result="$(ufw allow from "$source" to any port 443 proto "$network")"
+              if printf '%s' "$result" | grep -q 'Rule added'; then printf '%s %s\\n' "$source" "$network" >> "$backup/ufw-added"; fi
+            done
           fi
         fi
         systemctl daemon-reload
@@ -187,7 +208,7 @@ public enum RemoteScripts {
         systemctl restart bp-cascade.service
         sleep 2
         systemctl is-active --quiet bp-cascade.service
-        ss -H -ltn 'sport = :443' | grep -q .
+        if test "$network" = udp; then ss -H -lun 'sport = :443' | grep -q .; else ss -H -ltn 'sport = :443' | grep -q .; fi
         trap - ERR HUP TERM
         echo INSTALL_OK
         """
@@ -216,7 +237,7 @@ public enum RemoteScripts {
         trap cleanup EXIT
         test -f /etc/bp-cascade/managed-by-cascade || fail 'На сервере нет установленного Cascade.'
         test "$(cat /etc/bp-cascade/role)" = entry || fail 'Устройства добавляются только на входном VPS.'
-        test "$(cat /etc/bp-cascade/peer)" = \(quote(peer)) || fail 'Изменилась пара серверов.'
+        test "$(cat /etc/bp-cascade/peer)" = \(quote(IPAddress.canonical(peer) ?? peer)) || fail 'Изменилась пара серверов.'
         exec 9>/run/lock/bp-cascade.lock
         flock -n 9 || fail 'Другая операция Cascade ещё выполняется.'
         actual="$(sha256sum /etc/bp-cascade/config.json | cut -d ' ' -f1)"
@@ -264,7 +285,7 @@ public enum RemoteScripts {
         header + "\n" + """
         test -f /etc/bp-cascade/managed-by-cascade || fail 'Cascade не установлен.'
         test "$(cat /etc/bp-cascade/role)" = entry || fail 'Нужен входной VPS.'
-        test "$(cat /etc/bp-cascade/peer)" = \(quote(peer)) || fail 'Изменилась пара серверов.'
+        test "$(cat /etc/bp-cascade/peer)" = \(quote(IPAddress.canonical(peer) ?? peer)) || fail 'Изменилась пара серверов.'
         base64 -w0 /etc/bp-cascade/config.json
         """
     }

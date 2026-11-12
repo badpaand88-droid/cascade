@@ -114,7 +114,8 @@ public sealed class CoreRuntime
         }
         finally { Directory.Delete(dir, true); }
     }
-    public async Task<string> Probe(string host, Credentials credentials, string sni)
+    public Task<string> Probe(string host, Credentials credentials, string sni) => ProbeClient(Profiles.Client(host, credentials, sni));
+    public async Task<string> ProbeClient(string clientConfig)
     {
         if (Binary is null) throw new InvalidOperationException("Ядро sing-box ещё не подготовлено.");
         var dir = Files.TempDirectory(); Process? process = null;
@@ -122,7 +123,10 @@ public sealed class CoreRuntime
         {
             var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
             var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
-            var path = Path.Combine(dir, "probe.json"); await Files.AtomicWrite(path, Encoding.UTF8.GetBytes(Profiles.Probe(host, credentials, sni, port)));
+            var config = System.Text.Json.Nodes.JsonNode.Parse(clientConfig)!;
+            config["inbounds"] = new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject { ["type"] = "mixed", ["listen"] = "127.0.0.1", ["listen_port"] = port });
+            config["route"] = new System.Text.Json.Nodes.JsonObject { ["final"] = "cascade" };
+            var path = Path.Combine(dir, "probe.json"); await Files.AtomicWrite(path, Encoding.UTF8.GetBytes(config.ToJsonString()));
             var info = new ProcessStartInfo(Binary) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (var a in new[] { "run", "-c", path }) info.ArgumentList.Add(a);
             process = Process.Start(info)!;
@@ -131,7 +135,7 @@ public sealed class CoreRuntime
             if (process.HasExited) throw new IOException("Локальная проверка не запустилась.");
             using var handler = new SocketsHttpHandler { Proxy = new WebProxy($"socks5://127.0.0.1:{port}"), UseProxy = true, ConnectTimeout = TimeSpan.FromSeconds(12) };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) };
-            var ip = (await client.GetStringAsync("https://api.ipify.org")).Trim();
+            var ip = (await client.GetStringAsync("https://api64.ipify.org")).Trim();
             if (!IPAddress.TryParse(ip, out _)) throw new InvalidDataException("Проверка не вернула внешний IP.");
             using var check = await client.GetAsync("https://www.cloudflare.com/cdn-cgi/trace"); check.EnsureSuccessStatusCode();
             return ip;

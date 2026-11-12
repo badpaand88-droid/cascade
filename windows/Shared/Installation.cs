@@ -41,7 +41,7 @@ internal static class Installation
             }
             if (!File.Exists(Path.Combine(staging, "Cascade.exe"))) throw new InvalidDataException("Пакет не содержит Cascade.exe.");
             owned.Add("cascade.install.json");
-            File.WriteAllText(Path.Combine(staging, "cascade.install.json"), JsonSerializer.Serialize(new InstallManifest(Product, "0.3.0", owned.ToArray())));
+            File.WriteAllText(Path.Combine(staging, "cascade.install.json"), JsonSerializer.Serialize(new InstallManifest(Product, "0.4.0", owned.ToArray())));
             if (Directory.Exists(Target))
             {
                 var manifestFile = Path.Combine(Target, "cascade.install.json");
@@ -64,7 +64,7 @@ internal static class Installation
             Directory.CreateDirectory(ShortcutDirectory); MakeShortcut(Path.Combine(ShortcutDirectory, "Cascade.lnk"), Path.Combine(Target, "Cascade.exe"));
             if (desktop) MakeShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Cascade.lnk"), Path.Combine(Target, "Cascade.exe"));
             using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
-            key.SetValue("DisplayName", "Cascade"); key.SetValue("DisplayVersion", "0.3.0"); key.SetValue("Publisher", "BadPaand");
+            key.SetValue("DisplayName", "Cascade"); key.SetValue("DisplayVersion", "0.4.0"); key.SetValue("Publisher", "BadPaand");
             key.SetValue("InstallLocation", Target); key.SetValue("DisplayIcon", Path.Combine(Target, "Cascade.exe"));
             key.SetValue("UninstallString", "\"" + Path.Combine(Target, "Cascade.exe") + "\" --uninstall");
             key.SetValue("NoModify", 1); key.SetValue("NoRepair", 1);

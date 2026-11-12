@@ -14,7 +14,8 @@ fi
 swift build --disable-sandbox --scratch-path "$BUILD_DIR"
 BIN_DIR="$(swift build --disable-sandbox --scratch-path "$BUILD_DIR" --show-bin-path)"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
-cp "$BIN_DIR/Cascade" "$APP_BUNDLE/Contents/MacOS/Cascade"
+cp "$BIN_DIR/Cascade" "$APP_BUNDLE/Contents/MacOS/Cascade.next"
+mv "$APP_BUNDLE/Contents/MacOS/Cascade.next" "$APP_BUNDLE/Contents/MacOS/Cascade"
 chmod 755 "$APP_BUNDLE/Contents/MacOS/Cascade"
 # The app resolves its resource bundle in Contents/Resources before the SwiftPM fallback.
 rm -rf "$APP_BUNDLE/Cascade_CascadeMac.bundle"
@@ -29,8 +30,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>ru.badpaand.Cascade</string>
 <key>CFBundleName</key><string>Cascade</string>
 <key>CFBundleDisplayName</key><string>Cascade</string>
-<key>CFBundleShortVersionString</key><string>0.3.0</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>5</string>
 <key>CFBundleIconFile</key><string>Cascade</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>

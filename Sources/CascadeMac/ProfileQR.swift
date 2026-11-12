@@ -31,11 +31,11 @@ struct ProfileQRSheet: View {
     var body: some View {
         VStack(spacing: 18) {
             HStack { VStack(alignment: .leading, spacing: 5) { Text(profile.name).font(.title2.bold()); Text("Профиль подключения").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Готово") { dismiss() } }
-            Picker("Формат", selection: $format) { Text("VLESS-ссылка").tag(0); Text("JSON sing-box").tag(1) }.pickerStyle(.segmented)
+            Picker("Формат", selection: $format) { Text("Ссылка").tag(0); Text("JSON sing-box").tag(1) }.pickerStyle(.segmented)
             if let image = try? ProfileQR.image(payload: payload) {
                 Image(nsImage: image).interpolation(.none).resizable().aspectRatio(contentMode: .fit).frame(width: 320, height: 320).background(.white)
             } else { Text("Профиль не помещается в QR. Сохраните JSON-файл.").foregroundStyle(.orange) }
-            Text(format == 0 ? "Для клиентов, поддерживающих VLESS / REALITY. В SFM используйте импорт BPF или JSON-файла." : "Полный конфиг JSON. Поддержка сканирования зависит от клиента; для SFM надёжнее файл BPF.")
+            Text(format == 0 ? "Для совместимых клиентов. Ссылка содержит один адрес; для IPv4/IPv6 Авто используйте JSON/BPF. В SFM используйте импорт BPF или JSON-файла." : "Полный конфиг JSON. Поддержка сканирования зависит от клиента; для SFM надёжнее файл BPF.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Text("QR содержит ключ доступа. Передавайте его только владельцу устройства.").font(.caption).foregroundStyle(.orange)
             HStack {

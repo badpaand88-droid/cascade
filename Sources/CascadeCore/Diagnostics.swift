@@ -8,7 +8,7 @@ public enum Diagnostics {
     """
 
     public static func link(host: String, sshPort: String) throws -> String {
-        guard Server.isIPv4(host), let port = Int(sshPort), (1...65535).contains(port) else { throw CascadeError("Некорректный адрес или порт второго VPS.") }
+        guard IPAddress.isValid(host), let port = Int(sshPort), (1...65535).contains(port) else { throw CascadeError("Некорректный адрес или порт второго VPS.") }
         return """
         set -eu
         command -v timeout >/dev/null || { echo 'На входном сервере нужен timeout.' >&2; exit 1; }

@@ -11,12 +11,11 @@ using QRCoder;
 
 namespace Cascade.Core;
 
-public sealed record Server(string Host, int Port, string User, string Secret, string KeyPath = "")
+public sealed record Server(string Host, int Port, string User, string Secret, string KeyPath = "", string TunnelIPv4 = "", string TunnelIPv6 = "", AddressMode AddressMode = AddressMode.Auto)
 {
     public void Validate()
     {
-        if (!IPAddress.TryParse(Host, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork || ip.ToString() != Host)
-            throw new InvalidOperationException("Укажите корректный IPv4 сервера.");
+        _ = Addresses.Endpoints(this);
         if (Port is < 1 or > 65535 || !Regex.IsMatch(User, "^[a-z_][a-z0-9_-]{0,31}$")) throw new InvalidOperationException("Проверьте порт и SSH-логин.");
         if (KeyPath.Length > 0) { if (!File.Exists(KeyPath)) throw new InvalidOperationException("SSH-ключ не найден."); }
         else if (Secret.Length == 0) throw new InvalidOperationException("Введите пароль SSH.");
@@ -33,12 +32,14 @@ public sealed record Credentials(string Uuid, string PrivateKey, string PublicKe
     public static Credentials From(JsonObject config)
     {
         var inbound = config["inbounds"]![0]!;
-        var reality = inbound["tls"]!["reality"]!;
+        var user = inbound["users"]![0]!;
+        var uuid = (user["uuid"] ?? user["password"])!.GetValue<string>();
+        if (!Guid.TryParse(uuid, out _)) throw new InvalidDataException("Некорректный ключ на сервере.");
+        var reality = inbound["tls"]?["reality"];
+        if (reality is null) return new(uuid, "", "", "");
         var secret = reality["private_key"]!.GetValue<string>();
         var raw = Convert.FromBase64String(secret.Replace('-', '+').Replace('_', '/') + new string('=', (4 - secret.Length % 4) % 4));
         var key = new X25519PrivateKeyParameters(raw, 0);
-        var uuid = inbound["users"]![0]!["uuid"]!.GetValue<string>();
-        if (!Guid.TryParse(uuid, out _)) throw new InvalidDataException("Некорректный UUID на сервере.");
         return new(uuid, secret, B64(key.GeneratePublicKey().GetEncoded()), reality["short_id"]![0]!.GetValue<string>());
     }
     static string B64(byte[] b) => Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -115,20 +116,32 @@ public static class Profiles
         ["inbounds"] = new JsonArray(new JsonObject { ["type"] = "mixed", ["listen"] = "127.0.0.1", ["listen_port"] = port }),
         ["outbounds"] = new JsonArray(Outbound(host, c, sni)), ["route"] = new JsonObject { ["final"] = "cascade" }
     }.ToJsonString();
-    public static List<DeviceProfile> List(string configText, string host, string sni)
+    public static List<DeviceProfile> List(string configText, string host, string sni, string[]? hosts = null, bool ipv6Dns = false)
     {
         var config = JsonNode.Parse(configText)!.AsObject(); var inbound = config["inbounds"]![0]!;
-        if (inbound["type"]!.GetValue<string>() != "vless" || inbound["tls"]!["server_name"]!.GetValue<string>() != sni)
-            throw new InvalidDataException("Конфиг сервера не соответствует выбранному TLS-сайту.");
+        var settings = ConnectionSettings.From(config);
+        if (settings.Reality && settings.ServerName != sni) throw new InvalidDataException("Укажите прежнее имя REALITY установленного каскада.");
         var c = Credentials.From(config); var index = 0;
+        hosts ??= [host];
         return inbound["users"]!.AsArray().Select(user =>
         {
-            var id = user!["uuid"]!.GetValue<string>(); if (!Guid.TryParse(id, out _)) throw new InvalidDataException("Повреждён список устройств.");
+            var id = (user!["uuid"] ?? user["password"])!.GetValue<string>(); if (!Guid.TryParse(id, out _)) throw new InvalidDataException("Повреждён список устройств.");
             var name = user["name"]?.GetValue<string>() ?? (index == 0 ? "Основной профиль" : $"Устройство {index + 1}"); index++;
             var device = c with { Uuid = id };
-            var query = new Dictionary<string, string> { ["encryption"] = "none", ["security"] = "reality", ["sni"] = sni, ["fp"] = "chrome", ["pbk"] = c.PublicKey, ["sid"] = c.ShortId, ["type"] = "tcp", ["flow"] = "xtls-rprx-vision" };
-            var link = $"vless://{id}@{host}:443?" + string.Join("&", query.Select(kv => kv.Key + "=" + Uri.EscapeDataString(kv.Value))) + "#" + Uri.EscapeDataString(name);
-            return new DeviceProfile(id, name, Client(host, device, sni), link);
+            var query = new Dictionary<string, string> { ["sni"] = settings.ServerName };
+            if (settings.Vless) {
+                query["encryption"] = "none"; query["security"] = settings.Reality ? "reality" : "tls"; query["type"] = settings.TransportType ?? "tcp";
+                if (settings.Vision) query["flow"] = "xtls-rprx-vision";
+                if (settings.Reality) { query["fp"] = "chrome"; query["pbk"] = c.PublicKey; query["sid"] = c.ShortId; }
+                if (settings.TransportType is "ws" or "http" or "httpupgrade") query["path"] = settings.Path;
+                if (settings.TransportType is "http" or "httpupgrade") query["host"] = settings.ServerName;
+                if (settings.TransportType == "grpc") query["serviceName"] = settings.ServiceName;
+            }
+            if (settings.Scheme == ConnectionScheme.NaiveQuic) query["quic"] = "1";
+            var scheme = settings.Vless ? "vless" : settings.Naive ? "naive+https" : "anytls";
+            var auth = settings.Vless ? id : settings.Naive ? id + ":" + id : id;
+            var link = $"{scheme}://{auth}@{Addresses.Authority(hosts[0])}:443?" + string.Join("&", query.Select(kv => kv.Key + "=" + Uri.EscapeDataString(kv.Value))) + "#" + Uri.EscapeDataString(name);
+            return new DeviceProfile(id, name, ProtocolConfig.Client(hosts, device, settings, settings.ServerName, ipv6Dns), link);
         }).ToList();
     }
     public static (string Json, string Id) Add(string configText, string name)
@@ -137,7 +150,9 @@ public static class Profiles
         if (name.Length is < 1 or > 60 || name.Any(char.IsControl)) throw new InvalidOperationException("Имя устройства: 1–60 символов, без управляющих знаков.");
         var config = JsonNode.Parse(configText)!.AsObject(); var users = config["inbounds"]![0]!["users"]!.AsArray();
         if (users.Any(u => string.Equals(u!["name"]?.GetValue<string>(), name, StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("Такое имя уже используется.");
-        var id = Guid.NewGuid().ToString(); users.Add(new JsonObject { ["name"] = name, ["uuid"] = id, ["flow"] = "xtls-rprx-vision" });
+        var settings = ConnectionSettings.From(config);
+        var id = Guid.NewGuid().ToString(); var user = new JsonObject { ["name"] = name, [settings.Vless ? "uuid" : "password"] = id };
+        if (settings.Vision) user["flow"] = "xtls-rprx-vision"; if (settings.Naive) user["username"] = id; users.Add(user);
         return (config.ToJsonString(Pretty), id);
     }
 }

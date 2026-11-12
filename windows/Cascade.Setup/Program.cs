@@ -21,7 +21,7 @@ sealed class SetupForm : Form
     bool busy, complete;
     public SetupForm()
     {
-        Text = "Установка Cascade · 0.3.0"; ClientSize = new Size(620, 390); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
+        Text = "Установка Cascade · 0.4.0"; ClientSize = new Size(620, 390); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(15, 20, 24); ForeColor = Color.Gainsboro; Font = new Font("Segoe UI", 10); Padding = new Padding(30);
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };

@@ -9,6 +9,9 @@ public struct CascadeError: LocalizedError, Sendable {
 
 public struct Server: Sendable, Equatable {
     public var host = ""
+    public var tunnelIPv4 = ""
+    public var tunnelIPv6 = ""
+    public var addressMode: AddressMode = .auto
     public var port = "22"
     public var user = "root"
     public var secret = ""
@@ -16,7 +19,7 @@ public struct Server: Sendable, Equatable {
     public var useKey = false
     public init() {}
     public func validate() throws {
-        guard Self.isIPv4(host) else { throw CascadeError("Укажите IPv4-адрес сервера, например 203.0.113.10.") }
+        _ = try endpoints()
         guard let p = Int(port), (1...65535).contains(p) else { throw CascadeError("SSH-порт должен быть от 1 до 65535.") }
         guard user.range(of: "^[a-z_][a-z0-9_-]{0,31}$", options: .regularExpression) != nil else { throw CascadeError("Некорректное имя SSH-пользователя.") }
         if useKey {
@@ -50,13 +53,14 @@ public struct Credentials: Sendable {
     public init(config: [String: Any]) throws {
         guard let inbound = (config["inbounds"] as? [[String: Any]])?.first,
               let user = (inbound["users"] as? [[String: Any]])?.first,
-              let uuid = user["uuid"] as? String, UUID(uuidString: uuid) != nil,
-              let tls = inbound["tls"] as? [String: Any], let reality = tls["reality"] as? [String: Any],
-              let secret = reality["private_key"] as? String,
-              let short = (reality["short_id"] as? [String])?.first,
-              let raw = Self.decode(secret) else { throw CascadeError("Существующая конфигурация Cascade повреждена. Автоматическая перезапись остановлена.") }
-        let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw)
-        self.uuid = uuid; privateKey = secret; publicKey = Self.encode(key.publicKey.rawRepresentation); shortID = short
+              let id = (user["uuid"] ?? user["password"]) as? String, UUID(uuidString: id) != nil else { throw CascadeError("Повреждены ключи Cascade.") }
+        uuid = id
+        if let reality = (inbound["tls"] as? [String: Any])?["reality"] as? [String: Any],
+           let secret = reality["private_key"] as? String, let raw = Self.decode(secret),
+           let short = (reality["short_id"] as? [String])?.first {
+            let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw)
+            privateKey = secret; publicKey = Self.encode(key.publicKey.rawRepresentation); shortID = short
+        } else { privateKey = ""; publicKey = ""; shortID = "" }
     }
     private static func encode(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
     private static func decode(_ s: String) -> Data? {

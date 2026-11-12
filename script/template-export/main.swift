@@ -3,8 +3,8 @@ import CascadeCore
 
 let sample = Data("CASCADE_CONFIG_PAYLOAD".utf8)
 var templates: [String: String] = [
-    "preflight": RemoteScripts.preflight(sni: "@@SNI@@", peer: "@@PEER@@", role: "@@ROLE@@"),
-    "install": RemoteScripts.install(config: sample, role: "@@ROLE@@", peer: "@@PEER@@", sni: "@@SNI@@", transaction: "@@TX@@", expectedDigest: "@@EXPECTED_DIGEST@@"),
+    "preflight": RemoteScripts.preflight(sni: "@@SNI@@", peer: "@@PEER@@", role: "@@ROLE@@", tlsCheck: "@@TLS_CHECK@@"),
+    "install": RemoteScripts.install(config: sample, role: "@@ROLE@@", peer: "@@PEER@@", sni: "@@SNI@@", transaction: "@@TX@@", expectedDigest: "@@EXPECTED_DIGEST@@", tlsCheck: "@@TLS_CHECK@@", network: "@@NETWORK@@", sources: ["@@SOURCES@@"]),
     "rollback": RemoteScripts.rollback(transaction: "@@TX@@"),
     "readClients": RemoteScripts.readClients(peer: "@@PEER@@"),
     "updateClients": RemoteScripts.updateClients(config: sample, expectedDigest: "@@EXPECTED_DIGEST@@", peer: "@@PEER@@", transaction: "@@TX@@"),

@@ -76,6 +76,31 @@ if (!string.IsNullOrEmpty(binary))
         var (updated, _) = Profiles.Add(entryConfig, "Телефон");
         foreach (var json in new[] { exitConfig, entryConfig, updated, sample.Json, Profiles.Probe("203.0.113.1", entryKey, "www.microsoft.com", 19080) }) await runtime.Validate(json);
     });
+    await Test("IPv6 modes, 16 schemes, device export and all mixed cascade configs", async () =>
+    {
+        foreach (var host in new[] { "2001:db8::1", "::1", "2001:0DB8:0000::1" }) new Server(host,22,"root","test").Validate();
+        var dual = new Server("203.0.113.1",22,"root","test",TunnelIPv6:"2001:db8::1");
+        Check(Addresses.Endpoints(dual).Length == 2, "Dual-stack endpoints missing");
+        Check(Addresses.Endpoints(dual with { AddressMode = AddressMode.IPv6 }).SequenceEqual(new[] { "2001:db8::1" }), "IPv6 mode");
+        bool bad6 = false; try { new Server("fe80::1%eth0",22,"root","test").Validate(); } catch { bad6 = true; } Check(bad6,"Scoped address accepted");
+        var fixture = Environment.GetEnvironmentVariable("CASCADE_MATRIX_OUTPUT") ?? throw new Exception("Set CASCADE_MATRIX_OUTPUT to Swift fixture directory");
+        var cert = await File.ReadAllTextAsync(Path.Combine(fixture,"cert.pem")); var key = await File.ReadAllTextAsync(Path.Combine(fixture,"key.pem"));
+        var runtime = new CoreRuntime(binary);
+        var variants = Enum.GetValues<ConnectionScheme>().Select(scheme => (Settings:new ConnectionSettings { Scheme=scheme,ServerName="cascade.test",Certificate=cert,Key=key },Credentials:Credentials.Create())).ToArray();
+        foreach (var (settings, credentials) in variants) {
+            settings.Validate("www.microsoft.com");
+            var config = ProtocolConfig.Server(credentials,settings,"www.microsoft.com"); await runtime.Validate(config);
+            Check(ConnectionSettings.From(JsonNode.Parse(config)!.AsObject()).Scheme == settings.Scheme,"Scheme round trip");
+            var (added,id) = Profiles.Add(config,"iPhone"); var profiles = Profiles.List(added,"2001:db8::1","www.microsoft.com",new[] {"203.0.113.1","2001:db8::1"});
+            Check(profiles.Count == 2 && profiles[1].Id == id,"Device list");
+            foreach (var profile in profiles) { await runtime.Validate(profile.Json); Check(!profile.Json.Contains(key),"TLS private key leak"); Check(profile.Bpf().Length > 0,"No BPF"); }
+            var single = Profiles.List(config,"2001:db8::1","www.microsoft.com")[0]; Check(single.Link.Contains("@[2001:db8::1]:443"),"IPv6 URI");
+            var script = Scripts.Get("install",peer:"2001:db8::2",config:config,settings:settings,sources:new[] { "203.0.113.1", "2001:db8::1" });
+            var scriptPath=Path.Combine(directory,"install-"+settings.Scheme+".sh"); await File.WriteAllTextAsync(scriptPath,script);
+            var syntax=await NativeProcess.Run("/bin/bash",new[] { "-n",scriptPath }); Check(syntax.Code == 0,syntax.Error);
+        }
+        foreach (var (a,ca) in variants) foreach (var (b,cb) in variants) await runtime.Validate(ProtocolConfig.Server(ca,a,"www.microsoft.com",ProtocolConfig.Outbounds(new[] {"198.51.100.2","2001:db8::2"},cb,b,"www.microsoft.com")));
+    });
     if (Environment.GetEnvironmentVariable("CASCADE_NETWORK_TEST") == "1")
     {
         await Test("real two-hop REALITY with .NET-generated X25519 keys; exit failure has no direct fallback", async () =>

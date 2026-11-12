@@ -13,6 +13,14 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     readonly Credentials?[] credentials = new Credentials?[2];
     string transaction = "";
     public string Sni { get; private set; } = "www.microsoft.com";
+    public ConnectionSettings EntrySettings { get; private set; } = new();
+    public ConnectionSettings ExitSettings { get; private set; } = new();
+    ConnectionSettings Settings(int i) => i == 0 ? EntrySettings : ExitSettings;
+    bool IPv6Dns => S(1).AddressMode == AddressMode.IPv6 || Addresses.Endpoints(S(1)).All(Addresses.V6);
+    public void SetSettings(ConnectionSettings entry, ConnectionSettings exit) {
+        if (entry == EntrySettings && exit == ExitSettings) return;
+        EntrySettings = entry; ExitSettings = exit; ConfigurationChanged();
+    }
     public bool BothChecked => authenticated.All(x => x) && pins.All(x => x is not null);
     public bool Prepared { get; private set; }
     public bool Installed { get; private set; }
@@ -41,7 +49,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     void Pair()
     {
         S(0).Validate(); S(1).Validate(); Profiles.ValidateSni(Sni);
-        if (S(0).Host == S(1).Host) throw new InvalidOperationException("Для каскада нужны два разных VPS.");
+        if (Addresses.Canonical(S(0).Host) == Addresses.Canonical(S(1).Host)) throw new InvalidOperationException("Для каскада нужны два разных VPS.");
         if (!BothChecked) throw new InvalidOperationException("Проверьте SSH обоих серверов.");
     }
     public async Task CheckServer(int index, Func<HostPin, bool> confirm)
@@ -56,8 +64,13 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     }
     public async Task<string> CheckLink()
     {
-        Pair(); var r = await Transport.Run(S(0), P(0), Scripts.Get("link", peer: S(1).Host, sshPort: S(1).Port), false, 30); r.Require("LINK_OK");
-        return "TCP доступен: " + string.Join(", ", new[] { r.Output.Contains("TCP_SSH_OK") ? $"SSH {S(1).Port}" : null, r.Output.Contains("TCP_443_OK") ? "443" : null }.Where(s => s is not null));
+        Pair(); var reachable = new List<string>();
+        foreach (var host in Addresses.Endpoints(S(1))) {
+            var r = await Transport.Run(S(0), P(0), Scripts.Get("link", peer: host, sshPort: S(1).Port), false, 30);
+            if (r.Code == 0 && r.Output.Contains("LINK_OK")) reachable.Add(host);
+        }
+        if (reachable.Count == 0) throw new IOException("Между VPS нет доступного TCP-маршрута.");
+        return "TCP доступен: " + string.Join(", ", reachable);
     }
     public async Task CheckTls()
     {
@@ -68,15 +81,18 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     public async Task Prepare(bool existingOnly)
     {
         Pair(); Prepared = false; Installed = false; Devices = [];
+        if (!existingOnly) { EntrySettings.Validate(Sni); ExitSettings.Validate(Sni); }
         for (var i = 0; i < 2; i++)
         {
-            var r = await Transport.Run(S(i), P(i), Scripts.Get("preflight", Sni, S(1 - i).Host, i == 0 ? "entry" : "exit")); r.Require("PREFLIGHT_OK");
+            var r = await Transport.Run(S(i), P(i), Scripts.Get("preflight", Sni, S(1 - i).Host, i == 0 ? "entry" : "exit", settings: Settings(i), skipTls: existingOnly)); r.Require("PREFLIGHT_OK");
             var begin = r.Output.IndexOf("CONFIG_BEGIN\n", StringComparison.Ordinal); var end = r.Output.IndexOf("\nCONFIG_END", StringComparison.Ordinal);
             if (begin >= 0 && end > begin)
             {
                 var data = Encoding.UTF8.GetString(Convert.FromBase64String(r.Output[(begin + 13)..end].Trim()));
                 var parsed = JsonNode.Parse(data)!.AsObject();
-                if (parsed["inbounds"]![0]!["tls"]!["server_name"]!.GetValue<string>() != Sni) throw new InvalidDataException("Укажите прежнее имя TLS-сайта установленного каскада.");
+                var found = ConnectionSettings.From(parsed);
+                if (!existingOnly && (found.Scheme != Settings(i).Scheme || found.ServerName != (found.Reality ? Sni : Settings(i).ServerName))) throw new InvalidDataException("Уже установлен другой протокол или TLS-имя. Загрузите прежние профили. Для смены протокола нужна отдельная миграция.");
+                if (i == 0) { EntrySettings = found; if (existingOnly && found.Reality) Sni = found.ServerName; } else ExitSettings = found;
                 configs[i] = data; credentials[i] = Credentials.From(parsed);
             }
             else
@@ -88,11 +104,17 @@ public sealed class Workflow(CoreRuntime? runtime = null)
         }
         Log?.Invoke("Загружаем и проверяем официальное ядро sing-box…"); await core.Ensure();
         for (var i = 0; i < 2; i++) await core.Validate(Config(i));
-        await core.Validate(Profiles.Client(S(0).Host, credentials[0]!, Sni)); Prepared = true;
+        await core.Validate(ProtocolConfig.Client(Addresses.Endpoints(S(0)), credentials[0]!, EntrySettings, Sni, IPv6Dns)); Prepared = true;
         if (existingOnly) { Installed = true; RefreshDevices(); Log?.Invoke("Профили загружены с VPS без переустановки."); }
     }
-    string Config(int i) => configs[i] ?? Profiles.Server(credentials[i]!, Sni, i == 0 ? Profiles.Outbound(S(1).Host, credentials[1]!, Sni) : null);
-    void RefreshDevices() => Devices = Profiles.List(Config(0), S(0).Host, Sni);
+    string Config(int i) {
+        var listen = Addresses.Sources(S(i)).Any(Addresses.V6) ? "::" : "0.0.0.0";
+        if (configs[i] is not {} saved) return ProtocolConfig.Server(credentials[i]!, Settings(i), Sni, i == 0 ? ProtocolConfig.Outbounds(Addresses.Endpoints(S(1)), credentials[1]!, ExitSettings, Sni) : null, listen);
+        var config = JsonNode.Parse(saved)!; config["inbounds"]![0]!["listen"] = listen;
+        if (i == 0) config["outbounds"] = ProtocolConfig.Outbounds(Addresses.Endpoints(S(1)), credentials[1]!, ExitSettings, Sni);
+        return config.ToJsonString(Profiles.Pretty);
+    }
+    void RefreshDevices() => Devices = Profiles.List(Config(0), S(0).Host, Sni, Addresses.Endpoints(S(0)), IPv6Dns);
     public async Task Install()
     {
         Pair(); if (!Prepared) throw new InvalidOperationException("Сначала проверьте готовность серверов.");
@@ -103,7 +125,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
             {
                 Log?.Invoke($"Устанавливаем сервер {i + 1}…"); var config = Config(i);
                 var r = await Transport.Run(S(i), P(i), Scripts.Get("install", Sni, S(1 - i).Host, i == 0 ? "entry" : "exit", transaction,
-                    configs[i] is null ? "none" : Profiles.Digest(configs[i]!), config), true, 780); r.Require("INSTALL_OK");
+                    configs[i] is null ? "none" : Profiles.Digest(configs[i]!), config, settings: Settings(i), sources: Addresses.Sources(S(0))), true, 780); r.Require("INSTALL_OK");
                 configs[i] = config; Log?.Invoke($"Сервер {i + 1}: сервис запущен, точка отката сохранена.");
             }
             Installed = true; RefreshDevices();
@@ -123,7 +145,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     public async Task<string> Verify()
     {
         if (!Installed) throw new InvalidOperationException("Сначала установите или загрузите каскад.");
-        var ip = await core.Probe(S(0).Host, credentials[0]!, Sni); Log?.Invoke("Сквозной тест пройден. Выходной IP: " + ip); return ip;
+        var ip = await core.ProbeClient(ProtocolConfig.Client(Addresses.Endpoints(S(0)), credentials[0]!, EntrySettings, Sni, IPv6Dns)); Log?.Invoke("Сквозной тест пройден. Выходной IP: " + ip); return ip;
     }
     public async Task<string> AddDevice(string name)
     {
@@ -131,7 +153,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
         var read = await Transport.Run(S(0), P(0), Scripts.Get("readClients", peer: S(1).Host));
         if (read.Code != 0) throw new IOException(read.Error);
         var current = Encoding.UTF8.GetString(Convert.FromBase64String(read.Output.Trim()));
-        var (candidate, id) = Profiles.Add(current, name); var profiles = Profiles.List(candidate, S(0).Host, Sni);
+        var (candidate, id) = Profiles.Add(current, name); var profiles = Profiles.List(candidate, S(0).Host, Sni, Addresses.Endpoints(S(0)), IPv6Dns);
         await core.Validate(candidate); await core.Validate(profiles.First(p => p.Id == id).Json);
         var tx = Guid.NewGuid().ToString("N");
         var queued = await Transport.Run(S(0), P(0), Scripts.Get("updateClients", peer: S(1).Host, tx: tx, digest: Profiles.Digest(current), config: candidate)); queued.Require("CLIENT_UPDATE_STARTED");
@@ -160,7 +182,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     public string SafeError(Exception error)
     {
         var text = error.Message;
-        foreach (var secret in servers.Where(s => s is not null).Select(s => s!.Secret).Concat(credentials.Where(c => c is not null).SelectMany(c => new[] { c!.PrivateKey, c.Uuid })).Concat(Devices.Select(d => d.Id)))
+        foreach (var secret in servers.Where(s => s is not null).Select(s => s!.Secret).Concat(credentials.Where(c => c is not null).SelectMany(c => new[] { c!.PrivateKey, c.Uuid })).Concat(Devices.Select(d => d.Id)).Concat(new[] { EntrySettings.Key, ExitSettings.Key }))
             if (secret.Length > 0) text = text.Replace(secret, "[скрыто]", StringComparison.Ordinal);
         return text;
     }

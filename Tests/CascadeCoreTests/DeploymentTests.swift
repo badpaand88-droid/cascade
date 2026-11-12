@@ -49,6 +49,21 @@ final class DeploymentTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: f.config), candidate)
     }
 
+    func testIPv6UDPFirewallRulesAreScopedAndRollbackPreservesExistingIPv4() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        // A pre-existing IPv4 rule must survive adding/removing its IPv6 counterpart.
+        try Data("allow from 0.0.0.0/0 to any port 443 proto udp\n".utf8).write(to: f.root.appendingPathComponent("ufw-rule"))
+        var settings = ConnectionSettings(); settings.scheme = .quic
+        let config = try Config.json(ProtocolConfig.server(credentials: Credentials(), settings: settings, realityName: "www.microsoft.com"))
+        let r = try f.run(RemoteScripts.install(config: config, role: "entry", peer: "2001:db8::2", sni: "www.microsoft.com", transaction: "dual", expectedDigest: nil, tlsCheck: "true", network: "udp", sources: ["203.0.113.1", "2001:db8::1"]))
+        XCTAssertEqual(r.status, 0, r.error)
+        let journal = try String(contentsOf: f.root.appendingPathComponent("etc/bp-cascade/backup.dual/ufw-added"), encoding: .utf8)
+        XCTAssertEqual(journal, "::/0 udp\n")
+        XCTAssertEqual(try f.run(RemoteScripts.rollback(transaction: "dual")).status, 0)
+        let remaining = try String(contentsOf: f.root.appendingPathComponent("ufw-rule"), encoding: .utf8)
+        XCTAssertEqual(remaining, "allow from 0.0.0.0/0 to any port 443 proto udp\n")
+    }
+
     private func waitForDevice(_ fixture: Fixture, transaction: String) throws -> CommandResult {
         let end = Date().addingTimeInterval(12)
         while Date() < end {
@@ -128,11 +143,12 @@ private final class Fixture {
     var config: URL { root.appendingPathComponent("etc/bp-cascade/config.json") }
     init(version: String = "24.04") throws {
         root = try PrivateFiles.directory()
-        for path in ["bin", "etc/systemd/system", "run/systemd/system", "run/lock", "opt", "etc/ssl/certs"] {
+        for path in ["bin", "etc/systemd/system", "run/systemd/system", "run/lock", "opt", "etc/ssl/certs", "etc/default"] {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true)
         }
         try Data("ID=ubuntu\nVERSION_ID=\(version)\n".utf8).write(to: root.appendingPathComponent("etc/os-release"))
         try Data().write(to: root.appendingPathComponent("etc/ssl/certs/ca-certificates.crt"))
+        try Data("IPV6=yes\n".utf8).write(to: root.appendingPathComponent("etc/default/ufw"))
         let common = "#!/bin/bash\nset -eu\n"
         let mocks: [String: String] = [
             "id": "if test \"${1:-}\" = -u; then echo 0; fi",
@@ -160,10 +176,14 @@ private final class Fixture {
             esac
             """,
             "ufw": """
-            if test "$1" = status; then echo 'Status: active';
-            elif test "$1" = --force; then rm -f "$FAKE_ROOT/ufw-rule";
-            elif test -f "$FAKE_ROOT/ufw-rule"; then echo 'Skipping adding existing rule';
-            else touch "$FAKE_ROOT/ufw-rule"; echo 'Rule added'; fi
+            if test "$1" = status; then echo 'Status: active'; exit 0; fi
+            rules="$FAKE_ROOT/ufw-rule"
+            if test "$1" = --force; then
+              shift 2
+              grep -Fxv -- "$*" "$rules" > "$rules.next" || true
+              if test -s "$rules.next"; then mv "$rules.next" "$rules"; else rm -f "$rules" "$rules.next"; fi
+            elif test -f "$rules" && grep -Fxq -- "$*" "$rules"; then echo 'Skipping adding existing rule';
+            else printf '%s\\n' "$*" >> "$rules"; echo 'Rule added'; fi
             """
         ]
         for (name, body) in mocks {
@@ -179,7 +199,7 @@ private final class Fixture {
     }
     func run(_ script: String) throws -> CommandResult {
         var remapped = script
-        for path in ["/etc/bp-cascade", "/etc/systemd/system", "/etc/os-release", "/opt/bp-cascade", "/run/lock", "/run/systemd/system", "/etc/ssl/certs/ca-certificates.crt"] {
+        for path in ["/etc/bp-cascade", "/etc/systemd/system", "/etc/os-release", "/opt/bp-cascade", "/run/lock", "/run/systemd/system", "/etc/ssl/certs/ca-certificates.crt", "/etc/default/ufw"] {
             remapped = remapped.replacingOccurrences(of: path, with: root.path + path)
         }
         return try Commands.execute("/bin/bash", ["-s"], input: remapped,

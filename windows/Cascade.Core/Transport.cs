@@ -62,14 +62,19 @@ public static class Scripts
         using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("Cascade.RemoteScripts.json")!;
         return JsonSerializer.Deserialize<Dictionary<string, string>>(resource)!;
     }
-    public static string Get(string name, string sni = "www.microsoft.com", string peer = "198.51.100.2", string role = "entry", string tx = "none", string digest = "none", string? config = null, int sshPort = 22)
+    internal static string TlsTemplate(string sni) { Profiles.ValidateSni(sni); return Templates["tls"].Replace("@@SNI@@", sni); }
+    public static string Get(string name, string sni = "www.microsoft.com", string peer = "198.51.100.2", string role = "entry", string tx = "none", string digest = "none", string? config = null, int sshPort = 22, ConnectionSettings? settings = null, string[]? sources = null, bool skipTls = false)
     {
         Profiles.ValidateSni(sni);
-        if (!System.Net.IPAddress.TryParse(peer, out var ip) || ip.ToString() != peer || peer.Contains(':')) throw new InvalidOperationException("Некорректный адрес второго VPS.");
+        if (Addresses.Canonical(peer) is null) throw new InvalidOperationException("Некорректный адрес второго VPS.");
         if (role is not ("entry" or "exit") || !Regex.IsMatch(tx, "^[a-zA-Z0-9]+$") || !(digest == "none" || Regex.IsMatch(digest, "^[0-9a-f]{64}$")) || sshPort is < 1 or > 65535)
             throw new InvalidOperationException("Некорректные параметры установки.");
-        var text = Templates[name].Replace("@@SNI@@", sni).Replace("@@PEER@@", peer).Replace("@@ROLE@@", role).Replace("@@TX@@", tx).Replace("@@EXPECTED_DIGEST@@", digest)
-            .Replace("@@SSH_PORT@@", sshPort.ToString()).Replace("@@CONFIG_BASE64@@", Convert.ToBase64String(Encoding.UTF8.GetBytes(config ?? "{}")));
+        settings ??= config is null ? new ConnectionSettings() : ConnectionSettings.From(System.Text.Json.Nodes.JsonNode.Parse(config)!.AsObject());
+        if (!skipTls) settings.Validate(sni);
+        sources ??= [peer];
+        if (sources.Length == 0 || sources.Any(x => Addresses.Canonical(x) is null)) throw new InvalidOperationException("Проверьте IP входного VPS для firewall.");
+        var text = Templates[name].Replace("@@SNI@@", sni).Replace("@@PEER@@", Addresses.Canonical(peer)!).Replace("@@ROLE@@", role).Replace("@@TX@@", tx).Replace("@@EXPECTED_DIGEST@@", digest)
+            .Replace("@@TLS_CHECK@@", skipTls ? "true" : settings.TlsCheck(sni)).Replace("@@NETWORK@@", settings.Udp ? "udp" : "tcp").Replace("@@SOURCES@@", string.Join(" ", sources)).Replace("@@SSH_PORT@@", sshPort.ToString()).Replace("@@CONFIG_BASE64@@", Convert.ToBase64String(Encoding.UTF8.GetBytes(config ?? "{}")));
         if (text.Contains("@@", StringComparison.Ordinal)) throw new InvalidOperationException("Не заполнен шаблон установки.");
         return text;
     }

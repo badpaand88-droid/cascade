@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 
 public struct CommandResult: Sendable {
+    public init(status: Int32, output: String, error: String) { self.status = status; self.output = output; self.error = error }
     public let status: Int32
     public let output: String
     public let error: String
@@ -147,7 +148,13 @@ public enum Probe {
     public static func test(core: URL, host: String, credentials: Credentials, sni: String) async throws -> String {
         try await Task.detached { try testSynchronously(core: core, host: host, credentials: credentials, sni: sni) }.value
     }
+    public static func test(core: URL, client: Data) async throws -> String {
+        try await Task.detached { try testSynchronously(core: core, client: client) }.value
+    }
     private static func testSynchronously(core: URL, host: String, credentials: Credentials, sni: String) throws -> String {
+        try testSynchronously(core: core, client: Config.json(Config.client(host: host, credentials: credentials, sni: sni)))
+    }
+    private static func testSynchronously(core: URL, client: Data) throws -> String {
         let dir = try PrivateFiles.directory(); defer { try? FileManager.default.removeItem(at: dir) }
         // Reserve an available loopback port. Close immediately before the child binds it.
         let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -160,7 +167,10 @@ public enum Probe {
         _ = withUnsafeMutablePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }
         let port = Int(UInt16(bigEndian: addr.sin_port)); close(fd)
         let url = dir.appendingPathComponent("probe.json")
-        try PrivateFiles.write(try Config.json(Config.probe(host: host, credentials: credentials, sni: sni, localPort: port)), to: url)
+        var config = try JSONSerialization.jsonObject(with: client) as! [String: Any]
+        config["inbounds"] = [["type": "mixed", "listen": "127.0.0.1", "listen_port": port]]
+        config["route"] = ["final": "cascade"]
+        try PrivateFiles.write(try Config.json(config), to: url)
         let p = Process(); p.executableURL = core; p.arguments = ["run", "-c", url.path]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice; p.standardInput = FileHandle.nullDevice
         try p.run()
@@ -168,9 +178,9 @@ public enum Probe {
         Thread.sleep(forTimeInterval: 0.5)
         guard p.isRunning else { throw CascadeError("Локальный процесс проверки sing-box не запустился.") }
         let proxy = "socks5h://127.0.0.1:\(port)"
-        let ip = try Commands.execute("/usr/bin/curl", ["--silent", "--show-error", "--fail", "--proxy", proxy, "--noproxy", "", "--connect-timeout", "12", "--max-time", "25", "https://api.ipify.org"], timeout: 30)
+        let ip = try Commands.execute("/usr/bin/curl", ["--silent", "--show-error", "--fail", "--proxy", proxy, "--noproxy", "", "--connect-timeout", "12", "--max-time", "25", "https://api64.ipify.org"], timeout: 30)
         let value = ip.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ip.status == 0, Server.isIPv4(value) else { throw CascadeError("Сервисы установлены, но тест Mac → сервер 1 → сервер 2 не прошёл. Проверьте порт 443 в панели хостинга и доступность серверов у оператора. Другой включённый VPN тоже может влиять на тест.") }
+        guard ip.status == 0, IPAddress.isValid(value) else { throw CascadeError("Сервисы установлены, но тест Mac → сервер 1 → сервер 2 не прошёл. Проверьте порт 443 в панели хостинга и доступность серверов у оператора. Другой включённый VPN тоже может влиять на тест.") }
         let https = try Commands.execute("/usr/bin/curl", ["--silent", "--show-error", "--fail", "--proxy", proxy, "--noproxy", "", "--connect-timeout", "12", "--max-time", "25", "-o", "/dev/null", "https://www.cloudflare.com/cdn-cgi/trace"], timeout: 30)
         guard https.status == 0 else { throw CascadeError("Выходной IP получен, но второй HTTPS-тест не прошёл. Конфиг можно сохранить для диагностики.") }
         return value

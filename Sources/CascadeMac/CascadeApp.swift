@@ -40,6 +40,16 @@ final class InstallerModel: ObservableObject {
     @Published var first = Server() { didSet { if first != oldValue { invalidateServer(0) } } }
     @Published var second = Server() { didSet { if second != oldValue { invalidateServer(1) } } }
     @Published var sni = "www.microsoft.com" { didSet { if sni != oldValue { tlsPhase = .idle; tlsDetail = "Имя ещё не проверено" } } }
+    @Published var entrySettings = ConnectionSettings() { didSet { if entrySettings != oldValue { invalidateConfiguration() } } }
+    @Published var exitSettings = ConnectionSettings() { didSet { if exitSettings != oldValue { invalidateConfiguration() } } }
+    private func invalidateConfiguration() {
+        guard !busy else { return }
+        stage = .editing; verified = false; profiles = []; client = nil; credentials = []; serverConfigs = []; digests = []
+        linkPhase = .idle; linkDetail = "Схема изменена — подготовьте конфигурацию заново"
+    }
+    private var ipv6DNS: Bool { second.addressMode == .ipv6 || (try? second.endpoints().allSatisfy(IPAddress.isIPv6)) == true }
+    private func settings(_ i: Int) -> ConnectionSettings { i == 0 ? entrySettings : exitSettings }
+    private func tlsCheck(_ i: Int) -> String { ProtocolScripts.tls(settings(i), realityName: sni) }
     @Published var serverPhases: [CheckPhase] = [.idle, .idle]
     @Published var serverDetails = ["SSH ещё не проверен", "SSH ещё не проверен"]
     @Published var linkPhase: CheckPhase = .idle
@@ -122,12 +132,23 @@ final class InstallerModel: ObservableObject {
         } catch { self.error = safeError(error) }
     }
     private func configForServer(_ index: Int) throws -> Data {
-        if serverConfigs.indices.contains(index), let data = serverConfigs[index] { return data }
-        return try Config.json(Config.server(credentials: credentials[index], sni: sni,
-            next: index == 0 ? Config.outbound(host: second.host, credentials: credentials[1], sni: sni) : nil))
+        if serverConfigs.indices.contains(index), let data = serverConfigs[index] {
+            var config = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            var inbound = config["inbounds"] as! [[String: Any]]
+            inbound[0]["listen"] = (index == 0 ? first : second).sourceAddresses.contains(where: IPAddress.isIPv6) ? "::" : "0.0.0.0"
+            config["inbounds"] = inbound
+            if index == 0, credentials.count == 2 { config["outbounds"] = ProtocolConfig.outbounds(hosts: try second.endpoints(), credentials: credentials[1], settings: exitSettings, realityName: sni) }
+            return try Config.json(config)
+        }
+        var config = ProtocolConfig.server(credentials: credentials[index], settings: settings(index), realityName: sni,
+            next: index == 0 ? ProtocolConfig.outbounds(hosts: try second.endpoints(), credentials: credentials[1], settings: exitSettings, realityName: sni) : nil)
+        var inbounds = config["inbounds"] as! [[String: Any]]
+        inbounds[0]["listen"] = (index == 0 ? first : second).sourceAddresses.contains(where: IPAddress.isIPv6) ? "::" : "0.0.0.0"
+        config["inbounds"] = inbounds
+        return try Config.json(config)
     }
     private func refreshProfilesFromMemory() throws {
-        profiles = try DeviceProfiles.list(serverConfig: configForServer(0), host: first.host, sni: sni)
+        profiles = try DeviceProfiles.list(serverConfig: configForServer(0), host: first.host, sni: sni, hosts: try first.endpoints(), ipv6DNS: ipv6DNS)
         if !profiles.contains(where: { $0.id == selectedProfileID }) { selectedProfileID = profiles.first?.id ?? "" }
         client = selectedProfile?.config
     }
@@ -142,7 +163,7 @@ final class InstallerModel: ObservableObject {
                 let id = UUID().uuidString.lowercased()
                 let candidate = try DeviceProfiles.add(to: current, name: deviceName, userID: id)
                 try await Probe.validate(candidate, core: core)
-                let candidateProfiles = try DeviceProfiles.list(serverConfig: candidate, host: first.host, sni: sni)
+                let candidateProfiles = try DeviceProfiles.list(serverConfig: candidate, host: first.host, sni: sni, hosts: try first.endpoints(), ipv6DNS: ipv6DNS)
                 guard let newProfile = candidateProfiles.first(where: { $0.id == id }) else { throw CascadeError("Не удалось создать профиль устройства.") }
                 try await Probe.validate(newProfile.config, core: core)
                 let tx = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -225,8 +246,14 @@ final class InstallerModel: ObservableObject {
             defer { finish() }
             do {
                 guard entry.server.host != exit.server.host else { throw CascadeError("Нужны два разных VPS.") }
-                let script = try Diagnostics.link(host: exit.server.host, sshPort: exit.server.port)
-                let r = try await SSH.run(entry, script: script, askpass: askpass, timeout: 30, privileged: false)
+                var all = ""
+                for host in try second.endpoints() {
+                    let script = try Diagnostics.link(host: host, sshPort: exit.server.port)
+                    let check = try await SSH.run(entry, script: script, askpass: askpass, timeout: 30, privileged: false)
+                    all += host + ": " + check.output + "\n"
+                    if check.status != 0 { log("Маршрут к " + host + " пока недоступен.") }
+                }
+                let r = CommandResult(status: all.contains("LINK_OK") ? 0 : 1, output: all, error: "Между VPS не найден доступный маршрут.")
                 try require(r, marker: "LINK_OK")
                 linkPhase = .passed
                 let ports = [r.output.contains("TCP_SSH_OK") ? "SSH \(exit.server.port)" : nil, r.output.contains("TCP_443_OK") ? "443" : nil].compactMap { $0 }.joined(separator: ", ")
@@ -266,7 +293,7 @@ final class InstallerModel: ObservableObject {
     }
     func safeError(_ error: Error) -> String {
         var text = error.localizedDescription
-        for s in [first.secret, second.secret] + credentials.flatMap({ [$0.privateKey, $0.uuid] }) + profiles.map(\.id) where !s.isEmpty { text = text.replacingOccurrences(of: s, with: "[скрыто]") }
+        for s in [first.secret, second.secret, entrySettings.key, exitSettings.key] + credentials.flatMap({ [$0.privateKey, $0.uuid] }) + profiles.map(\.id) where !s.isEmpty { text = text.replacingOccurrences(of: s, with: "[скрыто]") }
         return String(text.prefix(1400))
     }
     func require(_ r: CommandResult, marker: String) throws {
@@ -277,8 +304,8 @@ final class InstallerModel: ObservableObject {
     }
     func scan() {
         do {
-            try first.validate(); try second.validate(); try Config.validateSNI(sni)
-            guard first.host != second.host else { throw CascadeError("Для каскада нужны два разных сервера.") }
+            try first.validate(); try second.validate(); try entrySettings.validate(realityName: sni); try exitSettings.validate(realityName: sni)
+            guard IPAddress.canonical(first.host) != IPAddress.canonical(second.host) else { throw CascadeError("Для каскада нужны два разных сервера.") }
         } catch { self.error = safeError(error); return }
         if canSkipFingerprints, let a = diagnosticIdentities[0], let b = diagnosticIdentities[1] {
             identities = [a, b]; trusted = true; check(); return
@@ -287,8 +314,8 @@ final class InstallerModel: ObservableObject {
         Task {
             defer { finish() }
             do {
-                try first.validate(); try second.validate(); try Config.validateSNI(sni)
-                guard first.host != second.host else { throw CascadeError("Для каскада нужны два разных сервера.") }
+                try first.validate(); try second.validate(); try entrySettings.validate(realityName: sni); try exitSettings.validate(realityName: sni)
+                guard IPAddress.canonical(first.host) != IPAddress.canonical(second.host) else { throw CascadeError("Для каскада нужны два разных сервера.") }
                 let a: HostIdentity
                 if let pinned = diagnosticIdentities[0] { a = pinned } else { a = try await SSH.scan(first) }
                 let b: HostIdentity
@@ -307,21 +334,21 @@ final class InstallerModel: ObservableObject {
         Task {
             defer { finish() }
             do {
-                guard first.host != second.host else { throw CascadeError("Для каскада нужны два разных сервера.") }
+                guard IPAddress.canonical(first.host) != IPAddress.canonical(second.host) else { throw CascadeError("Для каскада нужны два разных сервера.") }
                 credentials = []; digests = []; serverConfigs = []; existing = false
                 for i in 0..<2 {
                     busyText = "Проверяем сервер \(i + 1) из 2…"
-                    let r = try await SSH.run(identities[i], script: RemoteScripts.preflight(sni: sni, peer: identities[1-i].server.host, role: i == 0 ? "entry" : "exit"), askpass: askpass)
+                    let r = try await SSH.run(identities[i], script: RemoteScripts.preflight(sni: sni, peer: identities[1-i].server.host, role: i == 0 ? "entry" : "exit", tlsCheck: loadOnly ? "true" : tlsCheck(i)), askpass: askpass)
                     try require(r, marker: "PREFLIGHT_OK")
                     serverPhases[i] = .passed; serverDetails[i] = "SSH подтверждён · \(checkedTime)"
                     diagnosticIdentities[i] = identities[i]
                     if let start = r.output.range(of: "CONFIG_BEGIN\n"), let end = r.output.range(of: "\nCONFIG_END"), start.upperBound < end.lowerBound {
                         guard let data = Data(base64Encoded: String(r.output[start.upperBound..<end.lowerBound])),
                               let config = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw CascadeError("Не удалось прочитать существующий конфиг. Перезапись остановлена.") }
-                        guard let inbound = (config["inbounds"] as? [[String: Any]])?.first,
-                              let tls = inbound["tls"] as? [String: Any], tls["server_name"] as? String == sni else {
-                            throw CascadeError("TLS-сайт существующего Cascade отличается. Укажите прежнее имя в дополнительных настройках, чтобы сохранить работоспособность старых профилей.")
-                        }
+                        let found = try ConnectionSettings.read(config)
+                        if !loadOnly, found.scheme != settings(i).scheme { throw CascadeError("На сервере \(i+1) уже установлен \(found.scheme.title). Загрузите его профили; смена протокола требует отдельной миграции, чтобы не отключить прежние устройства.") }
+                        if !loadOnly, found.serverName != (found.scheme.isReality ? sni : settings(i).serverName) { throw CascadeError("Имя TLS установленного каскада отличается. Укажите прежнее имя или загрузите существующие профили.") }
+                        if i == 0 { entrySettings = found; if loadOnly && found.scheme.isReality { sni = found.serverName } } else { exitSettings = found }
                         digests.append(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
                         serverConfigs.append(data)
                         credentials.append(try Credentials(config: config)); existing = true
@@ -334,7 +361,7 @@ final class InstallerModel: ObservableObject {
                 }
                 busyText = "Загружаем проверенный sing-box для локального теста…"
                 core = try await CoreDownload.obtain()
-                client = try Config.json(Config.client(host: first.host, credentials: credentials[0], sni: sni))
+                client = try Config.json(ProtocolConfig.client(hosts: first.endpoints(), credentials: credentials[0], settings: entrySettings, realityName: sni, ipv6DNS: ipv6DNS))
                 try await Probe.validate(client!, core: core!)
                 for i in 0..<2 {
                     try await Probe.validate(configForServer(i), core: core!)
@@ -359,7 +386,7 @@ final class InstallerModel: ObservableObject {
                 for i in [1, 0] {
                     busyText = "Устанавливаем \(i == 1 ? "выходной" : "входной") сервер…"
                     let config = try configForServer(i)
-                    let r = try await SSH.run(identities[i], script: RemoteScripts.install(config: config, role: i == 0 ? "entry" : "exit", peer: identities[1-i].server.host, sni: sni, transaction: transaction, expectedDigest: digests[i]), askpass: askpass, timeout: 780)
+                    let r = try await SSH.run(identities[i], script: RemoteScripts.install(config: config, role: i == 0 ? "entry" : "exit", peer: identities[1-i].server.host, sni: sni, transaction: transaction, expectedDigest: digests[i], tlsCheck: tlsCheck(i), network: settings(i).scheme.udp ? "udp" : "tcp", sources: first.sourceAddresses), askpass: askpass, timeout: 780)
                     try require(r, marker: "INSTALL_OK")
                     changed.append(identities[i]); serverConfigs[i] = config; digests[i] = DeviceProfiles.digest(config)
                     log("Сервер \(i+1): сервис запущен, порт 443 слушает. Точка отката сохранена.")
@@ -392,7 +419,8 @@ final class InstallerModel: ObservableObject {
         busyText = "Проверяем всю цепочку с этого Mac…"
         verified = false
         do {
-            exitIP = try await Probe.test(core: core, host: first.host, credentials: credentials[0], sni: sni)
+            guard let client else { throw CascadeError("Нет профиля для проверки.") }
+            exitIP = try await Probe.test(core: core, client: client)
             verified = true
             linkPhase = .passed; linkDetail = "VPN-каскад проверен · \(checkedTime)"
             log("Проверка через оба сервера: два HTTPS-ресурса доступны. Выходной IP: \(exitIP).")
@@ -521,9 +549,9 @@ struct ContentView: View {
             }.padding(.top, 48)
             Spacer()
             VStack(alignment: .leading, spacing: 8) {
-                Text("VLESS · REALITY · VISION").font(.system(size: 9, weight: .semibold)).tracking(0.5).foregroundStyle(mint)
-                Text("Без собственного домена.\nДва VPS. Один профиль.").font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
-                Text("v0.3 · sing-box \(Config.version)").font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 14)
+                Text("IPv4 / IPv6 · VLESS · TLS").font(.system(size: 9, weight: .semibold)).tracking(0.5).foregroundStyle(mint)
+                Text("Два VPS. Один профиль.\nВыберите свою схему.").font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                Text("v0.4 · sing-box \(Config.version)").font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 14)
             }
         }.padding(.horizontal, 26).padding(.top, 44).padding(.bottom, 28).frame(width: 228)
             .background(Color.black.opacity(0.20))
@@ -564,6 +592,10 @@ struct ContentView: View {
                 Text("Сначала SSH обоих VPS. До установки проверяется TCP; после — VPN-каскад.")
                     .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            HStack(alignment: .top, spacing: 16) {
+                ConnectionSettingsView(settings: $model.entrySettings, title: "Устройство → входной VPS")
+                ConnectionSettingsView(settings: $model.exitSettings, title: "Входной → выходной VPS")
+            }.disabled(model.busy)
             VStack(alignment: .leading, spacing: 0) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { advanced.toggle() }
@@ -594,7 +626,7 @@ struct ContentView: View {
                 }
             }.background(panelColor, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.07))).disabled(model.busy)
-            Text("Нужны чистые Ubuntu 22.04 / 24.04 / 26.04 или Debian 12 / 13, root либо sudo без пароля. TCP 443 должен быть свободен и доступен в firewall хостинга.")
+            Text("Нужны чистые Ubuntu 22.04 / 24.04 / 26.04 или Debian 12 / 13, root либо sudo без пароля. Порт 443 выбранного TCP/UDP транспорта должен быть свободен и доступен в firewall хостинга.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(3)
         }
     }
@@ -619,7 +651,8 @@ struct ContentView: View {
             Label("Серверы готовы к установке", systemImage: "checkmark.shield").font(.system(size: 20, weight: .medium)).foregroundStyle(mint)
             summaryRow("Вход", "\(model.first.host):443")
             summaryRow("Выход", "\(model.second.host):443")
-            summaryRow("Защита", "VLESS + REALITY + Vision на обоих участках")
+            summaryRow("Вход", model.entrySettings.scheme.title)
+            summaryRow("Между VPS", model.exitSettings.scheme.title)
             summaryRow("Профиль", "sing-box \(Config.version)")
             Divider()
             Text("Установщик создаст отдельный сервис bp-cascade, добавит правила в активный UFW и включит автозапуск. Перед заменой настройки Cascade сохранится точка отката. Firewall панели хостинга настраивается отдельно.")
@@ -644,7 +677,7 @@ struct ContentView: View {
                     Button(action: model.importSelected) { Label("Импортировать в sing-box", systemImage: "arrow.up.forward.app") }.disabled(model.sfmURL == nil)
                     Button { model.qrVisible = true } label: { Label("Показать QR", systemImage: "qrcode") }
                 }.buttonStyle(.bordered).controlSize(.large).disabled(model.busy)
-                Text("SFM откроет подтверждение локального импорта BPF. JSON можно сохранить отдельно; QR доступен как VLESS-ссылка и полный JSON.")
+                Text("SFM откроет подтверждение локального импорта BPF. JSON можно сохранить отдельно; QR доступен как ссылка и полный JSON; автоматический выбор адресов сохраняется в JSON/BPF.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 Divider()
                 Text("Добавить устройство").font(.system(size: 12, weight: .medium))
@@ -730,7 +763,10 @@ struct ServerCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { Text(number).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(mint); Spacer(); Image(systemName: "server.rack").foregroundStyle(.secondary) }
             VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 17, weight: .medium)); Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary) }
-            field("IPv4-адрес", text: $server.host, placeholder: "203.0.113.10")
+            field("SSH · IPv4 или IPv6", text: $server.host, placeholder: "203.0.113.10 / 2001:db8::1")
+            Picker("Адрес VPN", selection: $server.addressMode) { ForEach(AddressMode.allCases, id: \.self) { Text($0.title).tag($0) } }
+            field("Дополнительный IPv4 этого VPS", text: $server.tunnelIPv4, placeholder: "Необязательно")
+            field("Дополнительный IPv6 этого VPS", text: $server.tunnelIPv6, placeholder: "2001:db8::1")
             HStack(spacing: 12) {
                 field("Логин", text: $server.user, placeholder: "root")
                 field("SSH-порт", text: $server.port, placeholder: "22").frame(width: 75)
