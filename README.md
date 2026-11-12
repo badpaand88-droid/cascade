@@ -8,6 +8,23 @@
 
 На обоих участках — VLESS + REALITY + Vision. Собственный домен и выпуск сертификата не требуются.
 
+## Скачать и установить
+
+**[Готовые сборки Cascade 0.3.0](https://github.com/badpaand88-droid/cascade/releases/tag/v0.3.0)** — собирать исходники не требуется.
+
+| Устройство | Скачать | Установка |
+| --- | --- | --- |
+| Mac с Apple Silicon (M1 и новее), macOS 14+ | [DMG для Mac](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/Cascade-Mac-arm64-0.3.0.dmg) | Откройте DMG, перетащите Cascade в «Программы», запустите оттуда. |
+| Windows 10/11 x64 | [EXE-установщик](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/Cascade-Windows-x64-0.3.0-Setup.exe) | Запустите файл и следуйте мастеру. .NET уже включён. |
+| Windows x64 без установки | [Portable ZIP](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/Cascade-Windows-x64-0.3.0-Portable.zip) | Распакуйте весь архив и откройте `Cascade.exe`. |
+| iPhone / iPad | [Инструкция iOS](docs/IOS.txt) · [Скачать инструкцию](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/Cascade-iOS-Guide.html) | Установите официальный sing-box из App Store, затем импортируйте персональный BPF/JSON из Cascade. |
+
+[Краткая инструкция](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/INSTALL-RU.txt) · [Контрольные суммы SHA-256](https://github.com/badpaand88-droid/cascade/releases/download/v0.3.0/SHA256SUMS.txt)
+
+Это предварительная версия. Windows GUI, установка/удаление и TUN ещё не проверены на реальном Windows-ПК. Mac-приложение имеет ad-hoc подпись без нотариализации Apple; EXE пока без Authenticode. ОС может показать предупреждение издателя. Intel Mac этой сборкой не поддерживается. Отдельного приложения Cascade для iOS нет; импорт на физическом iPhone пока не проверен.
+
+Пока репозиторий приватный, скачивание доступно только пользователям с доступом к нему. Для настройки нужны два собственных VPS и SSH-доступ; индивидуальные VPN-профили в релиз не включены.
+
 ## Возможности
 
 - SSH по паролю или приватному ключу с подтверждением отпечатка сервера.
