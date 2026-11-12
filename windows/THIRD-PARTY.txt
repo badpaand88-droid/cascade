@@ -1,0 +1,13 @@
+Cascade 0.3.0 / Windows x64
+
+Included runtime/libraries:
+- Microsoft .NET / Windows Desktop 10.0.15 — see Notices/dotnet*.
+- SSH.NET 2026.0.0 — MIT, see Notices/SSH.NET-LICENSE.txt.
+- BouncyCastle.Cryptography 2.7.0 — MIT, see Notices/BouncyCastle-LICENSE.md.
+- QRCoder 1.8.1 — MIT, see Notices/QRCoder-LICENSE.txt.
+
+Official sing-box core and SFW are downloaded on demand from SagerNet/sing-box,
+verified against pinned SHA-256 values. They are not embedded in this installer.
+sing-box project and license: https://github.com/SagerNet/sing-box (GPL-3.0-or-later).
+
+Cascade is an independent installer/configuration tool; it is not an official SagerNet product.

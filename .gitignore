@@ -1,0 +1,11 @@
+.build/
+work/
+dist/
+.DS_Store
+windows/**/bin/
+windows/**/obj/
+windows/Assets/payload.zip
+windows/Assets/payload.sha256
+outputs/
+*.user
+*.suo
