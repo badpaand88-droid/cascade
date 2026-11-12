@@ -25,6 +25,10 @@ byte[] Resource(string name)
  }
  throw new Exception("Missing resource " + name);
 }
+var brand=Resource("Cascade.Brand.png");
+Require(brand.Length>1000,"Installer artwork missing");
+if(args.Length>3) Require(SHA256.HashData(brand).SequenceEqual(SHA256.HashData(File.ReadAllBytes(args[3]))),"Installer artwork mismatch");
+Console.WriteLine("PASS panda artwork embedded in installer");
 var payload = Resource("Cascade.Payload.zip"); var digest = Encoding.UTF8.GetString(Resource("Cascade.Payload.sha256")).Trim();
 Require(Convert.ToHexString(SHA256.HashData(payload)).Equals(digest,StringComparison.OrdinalIgnoreCase),"Embedded payload hash mismatch");
 Console.WriteLine("PASS embedded installer payload SHA-256");
@@ -34,3 +38,15 @@ Require(archive.Entries.All(e => !e.FullName.StartsWith('/') && !e.FullName.Cont
 Require(archive.Entries.All(e => !e.FullName.EndsWith(".bpf",StringComparison.OrdinalIgnoreCase) && !e.FullName.EndsWith(".json",StringComparison.OrdinalIgnoreCase)),"Unexpected private profile in installer");
 Require(archive.GetEntry("Notices/SSH.NET-LICENSE.txt") is not null,"Notices missing");
 Console.WriteLine("PASS complete payload, safe paths, notices, no user VPN profiles");
+
+if(args.Length>5) {
+ using var coreInput=File.OpenRead(args[4]);using var corePe=new PEReader(coreInput);
+ var coreMetadata=corePe.GetMetadataReader();var coreData=corePe.GetSectionData(corePe.PEHeaders.CorHeader!.ResourcesDirectory.RelativeVirtualAddress).GetContent();
+ var matched=false;
+ foreach(var handle in coreMetadata.ManifestResources) {
+  var resource=coreMetadata.GetManifestResource(handle);if(coreMetadata.GetString(resource.Name)!="Cascade.Security.py")continue;
+  var offset=checked((int)resource.Offset);var length=BinaryPrimitives.ReadInt32LittleEndian(coreData.AsSpan(offset,4));
+  Require(SHA256.HashData(coreData.AsSpan(offset+4,length)).SequenceEqual(SHA256.HashData(File.ReadAllBytes(args[5]))),"Security controller resource differs from source");matched=true;
+ }
+ Require(matched,"Security controller resource missing");Console.WriteLine("PASS current shared security controller embedded in core");
+}

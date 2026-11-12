@@ -33,5 +33,6 @@ sealed class ServerCard : RoundPanel
         foreach (var field in new[] { host, user, port, secret, key, v4, v6 }) field.TextChanged += (_, _) => Edited?.Invoke();
         auth.SelectedIndexChanged += (_, _) => { keyRow.Visible = auth.SelectedIndex == 1; secret.Clear(); Edited?.Invoke(); };
     }
+    public void LoadSecurityIdentity(Server s) { auth.SelectedIndex=s.KeyPath.Length>0?1:0; user.Text=s.User; key.Text=s.KeyPath; secret.Text=s.Secret; }
     public Server Read() => new(host.Text.Trim(), int.TryParse(port.Text, out var n) ? n : 0, user.Text.Trim(), secret.Text, auth.SelectedIndex == 1 ? key.Text : "", v4.Text.Trim(), v6.Text.Trim(), (AddressMode)addressMode.SelectedIndex);
 }

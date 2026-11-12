@@ -10,16 +10,16 @@
 
 ## Скачать и установить
 
-**[Готовые сборки Cascade 0.4.0](https://github.com/badpaand88-droid/cascade/releases/tag/v0.4.0)** — собирать исходники не требуется.
+**[Готовые сборки Cascade 0.5.0](https://github.com/badpaand88-droid/cascade/releases/tag/v0.5.0)** — собирать исходники не требуется.
 
 | Устройство | Скачать | Установка |
 | --- | --- | --- |
-| Mac с Apple Silicon (M1 и новее), macOS 14+ | [DMG для Mac](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/Cascade-Mac-arm64-0.4.0.dmg) | Откройте DMG, перетащите Cascade в «Программы», запустите оттуда. |
-| Windows 10/11 x64 | [EXE-установщик](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/Cascade-Windows-x64-0.4.0-Setup.exe) | Запустите файл и следуйте мастеру. .NET уже включён. |
-| Windows x64 без установки | [Portable ZIP](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/Cascade-Windows-x64-0.4.0-Portable.zip) | Распакуйте весь архив и откройте `Cascade.exe`. |
+| Mac с Apple Silicon (M1 и новее), macOS 14+ | [DMG для Mac](https://github.com/badpaand88-droid/cascade/releases/download/v0.5.0/Cascade-Mac-arm64-0.5.0.dmg) | Откройте DMG, перетащите Cascade в «Программы», запустите оттуда. |
+| Windows 10/11 x64 | [EXE-установщик](https://github.com/badpaand88-droid/cascade/releases/download/v0.5.0/Cascade-Windows-x64-0.5.0-Setup.exe) | Запустите файл и следуйте мастеру. .NET уже включён. |
+| Windows x64 без установки | [Portable ZIP](https://github.com/badpaand88-droid/cascade/releases/download/v0.5.0/Cascade-Windows-x64-0.5.0-Portable.zip) | Распакуйте весь архив и откройте `Cascade.exe`. |
 | iPhone / iPad | [Инструкция iOS](docs/IOS.txt) · [Скачать инструкцию](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/Cascade-iOS-Guide.html) | Установите официальный sing-box из App Store, затем импортируйте персональный BPF/JSON из Cascade. |
 
-[Краткая инструкция](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/INSTALL-RU.txt) · [Контрольные суммы SHA-256](https://github.com/badpaand88-droid/cascade/releases/download/v0.4.0/SHA256SUMS.txt)
+[Краткая инструкция](https://github.com/badpaand88-droid/cascade/releases/download/v0.5.0/INSTALL-RU.txt) · [Контрольные суммы SHA-256](https://github.com/badpaand88-droid/cascade/releases/download/v0.5.0/SHA256SUMS.txt)
 
 Это предварительная версия. Windows GUI, установка/удаление и TUN ещё не проверены на реальном Windows-ПК. Mac-приложение имеет ad-hoc подпись без нотариализации Apple; EXE пока без Authenticode. ОС может показать предупреждение издателя. Intel Mac этой сборкой не поддерживается. Отдельного приложения Cascade для iOS нет; импорт на физическом iPhone пока не проверен.
 
@@ -76,7 +76,7 @@ JSON/BPF/QR содержат ключ доступа к VPN. Не добавля
 
 ## Статус проверки
 
-Тестовая версия 0.4.0. Для новой версии проверяются IPv6, генерация конфигов и реальные локальные каскады. Рабочая установка предыдущей версии на реальных VPS подтверждалась отдельно. Windows EXE кросс-собран на Mac: проверены криптография, конфиги, локальный двухузловой REALITY-каскад, QR/BPF и состав установщика. **GUI, установка/удаление и системный TUN на настоящей Windows пока не проверены.** Импорт на физическом iPhone также требует проверки.
+Тестовая версия 0.5.0. Для новой версии проверяются IPv6, генерация конфигов и реальные локальные каскады. Рабочая установка предыдущей версии на реальных VPS подтверждалась отдельно. Windows EXE кросс-собран на Mac: проверены криптография, конфиги, локальный двухузловой REALITY-каскад, QR/BPF и состав установщика. **GUI, установка/удаление и системный TUN на настоящей Windows пока не проверены.** Импорт на физическом iPhone также требует проверки.
 
 Mac-сборки имеют локальную ad-hoc подпись без нотариализации Apple. Windows-сборки пока не подписаны Authenticode-сертификатом. Работа конкретной схемы зависит от сети и может меняться.
 
@@ -92,3 +92,9 @@ Mac-сборки имеют локальную ad-hoc подпись без но
 ## Зависимости
 
 Cascade — независимый проект. Ядро и официальные клиенты sing-box скачиваются из [SagerNet/sing-box](https://github.com/SagerNet/sing-box); их лицензия GPL-3.0-or-later. Библиотеки Windows и включённые уведомления перечислены в [windows/THIRD-PARTY.txt](windows/THIRD-PARTY.txt) и [windows/Notices/](windows/Notices/).
+
+## Безопасность в версии 0.5.0
+
+Mac и Windows получили аудит серверов, настройку SSH-ключей/администратора, UFW IPv4/IPv6, Fail2ban SSH, security-обновления и диагностику активного зондирования. Настройки подтверждаются после нового SSH-сеанса и сквозного теста; предусмотрен отложенный откат. Новая иконка — панда с белой обводкой на чёрном фоне.
+
+Описание и ограничения: [Безопасность](docs/SECURITY.md), [Проверки 0.5](docs/TESTING-0.5.md). Установщики и контрольные суммы доступны в релизе 0.5.0. Отдельный HTTPS-фронтенд для Naive/AnyTLS пока не устанавливается.

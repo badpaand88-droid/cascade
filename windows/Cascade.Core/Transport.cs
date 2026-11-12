@@ -46,7 +46,7 @@ public static class Transport
         };
         client.Connect();
         var delimiter = "CASCADE_" + Guid.NewGuid().ToString("N");
-        var shell = root && server.User != "root" ? "sudo -n /bin/bash" : "/bin/bash";
+        var shell = root && server.User != "root" ? "sudo -n env CASCADE_CONNECTION=\"$SSH_CONNECTION\" /bin/bash" : "env CASCADE_CONNECTION=\"$SSH_CONNECTION\" /bin/bash";
         using var command = client.CreateCommand(shell + " <<'" + delimiter + "'\n" + script + "\n" + delimiter + "\n");
         command.CommandTimeout = TimeSpan.FromSeconds(timeout);
         var output = command.Execute();

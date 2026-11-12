@@ -12,6 +12,7 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../../design/Cascade-brand.png" LogicalName="Cascade.Brand.png" />
     <Compile Include="../Shared/Installation.cs" Link="Installation.cs" />
     <EmbeddedResource Include="../Assets/payload.zip" LogicalName="Cascade.Payload.zip" />
     <EmbeddedResource Include="../Assets/payload.sha256" LogicalName="Cascade.Payload.sha256" />

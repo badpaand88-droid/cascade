@@ -3,6 +3,7 @@
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
     <PackageReference Include="QRCoder" Version="1.8.1" />
+    <EmbeddedResource Include="../../Sources/CascadeCore/Resources/security.py" LogicalName="Cascade.Security.py" />
     <EmbeddedResource Include="../Assets/remote-scripts.json" LogicalName="Cascade.RemoteScripts.json" />
   </ItemGroup>
 </Project>

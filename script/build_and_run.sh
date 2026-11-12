@@ -21,6 +21,8 @@ chmod 755 "$APP_BUNDLE/Contents/MacOS/Cascade"
 rm -rf "$APP_BUNDLE/Cascade_CascadeMac.bundle"
 rm -rf "$APP_BUNDLE/Contents/Resources/Cascade_CascadeMac.bundle"
 cp -R "$BIN_DIR/Cascade_CascadeMac.bundle" "$APP_BUNDLE/Contents/Resources/"
+rm -rf "$APP_BUNDLE/Contents/Resources/Cascade_CascadeCore.bundle"
+cp -R "$BIN_DIR/Cascade_CascadeCore.bundle" "$APP_BUNDLE/Contents/Resources/"
 cp "$ROOT_DIR/design/Cascade.icns" "$APP_BUNDLE/Contents/Resources/Cascade.icns"
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,8 +32,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>ru.badpaand.Cascade</string>
 <key>CFBundleName</key><string>Cascade</string>
 <key>CFBundleDisplayName</key><string>Cascade</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
-<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>0.5.0</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>CFBundleIconFile</key><string>Cascade</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>

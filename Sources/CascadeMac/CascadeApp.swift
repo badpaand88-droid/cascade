@@ -37,8 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class InstallerModel: ObservableObject {
     static var operationInProgress = false
     enum Stage { case editing, trust, ready, installed, recovery }
-    @Published var first = Server() { didSet { if first != oldValue { invalidateServer(0) } } }
-    @Published var second = Server() { didSet { if second != oldValue { invalidateServer(1) } } }
+    @Published var first = Server() { didSet { if first != oldValue && !updatingSecurityIdentity { securityKeyVerified[0]=false; invalidateServer(0) } } }
+    @Published var second = Server() { didSet { if second != oldValue && !updatingSecurityIdentity { securityKeyVerified[1]=false; invalidateServer(1) } } }
     @Published var sni = "www.microsoft.com" { didSet { if sni != oldValue { tlsPhase = .idle; tlsDetail = "Имя ещё не проверено" } } }
     @Published var entrySettings = ConnectionSettings() { didSet { if entrySettings != oldValue { invalidateConfiguration() } } }
     @Published var exitSettings = ConnectionSettings() { didSet { if exitSettings != oldValue { invalidateConfiguration() } } }
@@ -293,7 +293,7 @@ final class InstallerModel: ObservableObject {
     }
     func safeError(_ error: Error) -> String {
         var text = error.localizedDescription
-        for s in [first.secret, second.secret, entrySettings.key, exitSettings.key] + credentials.flatMap({ [$0.privateKey, $0.uuid] }) + profiles.map(\.id) where !s.isEmpty { text = text.replacingOccurrences(of: s, with: "[скрыто]") }
+        for s in [first.secret, second.secret, securityKeyPass, entrySettings.key, exitSettings.key] + credentials.flatMap({ [$0.privateKey, $0.uuid] }) + profiles.map(\.id) where !s.isEmpty { text = text.replacingOccurrences(of: s, with: "[скрыто]") }
         return String(text.prefix(1400))
     }
     func require(_ r: CommandResult, marker: String) throws {
@@ -475,7 +475,104 @@ final class InstallerModel: ObservableObject {
             else { error = "Не удалось подтвердить откат: " + failures.joined(separator: ", ") + ". Не закрывайте доступы до проверки серверов." }
         }
     }
+    @Published var securityReport = "Выберите сервер и запустите аудит. Настройки применяются только по кнопке."
+    @Published var securityIndex = 0
+    @Published var securityAdmin = "cascade-admin"
+    @Published var securityKeyPath = ""
+    @Published var securityKeyPass = ""
+    @Published var securityKeyVerified = [false, false]
+    private var updatingSecurityIdentity = false
+    private var securityPending = ["", ""]
+    var securityAvailable: Bool { stage == .installed && identities.count == 2 }
+    func securityRequest(_ action: String, index: Int, tx: String = "", options: [String:Any] = [:]) -> [String:Any] {
+        ServerSecurity.request(action: action, server: identities[index].server, role: index == 0 ? "entry" : "exit", sources: first.sourceAddresses, tx: tx,
+            options: options.merging(["sni":sni,"keyVerified":securityKeyVerified[index]]) { _,new in new })
+    }
+    func securityRun(_ action: String, index: Int, tx: String = "", options: [String:Any] = [:]) async throws -> String {
+        let r = try await SSH.run(identities[index], script: ServerSecurity.script(securityRequest(action,index:index,tx:tx,options:options)), askpass:askpass, timeout: action == "apply" ? 480 : 90)
+        guard r.status == 0 else { throw CascadeError(r.error) }
+        return r.output
+    }
+    func securityAction(_ action: String, options: [String:Any] = [:]) {
+        guard securityAvailable, !busy else { return }
+        let index=securityIndex
+        start("Безопасность · сервер \(index+1)…")
+        Task {
+            defer { finish() }
+            do {
+                if action == "apply" || (action == "rollback" && securityPending[index].isEmpty) {
+                    guard verified, let core, let client else { throw CascadeError("Сначала выполните успешный сквозной тест каскада.") }
+                    _ = try await Probe.test(core:core,client:client)
+                    let tx=UUID().uuidString.replacingOccurrences(of:"-",with:"").lowercased()
+                    // Remember before sending: a transport failure may happen after the timer was armed.
+                    securityPending[index]=tx
+                    securityReport = try await securityRun(action == "rollback" ? "restore" : action,index:index,tx:tx,options:options)
+                    busyText="Проверяем новый SSH-сеанс и VPN перед подтверждением…"
+                    let fresh=try await SSH.run(identities[index],script:"set -eu; systemctl is-active --quiet bp-cascade; echo SECURITY_SSH_OK",askpass:askpass)
+                    try require(fresh,marker:"SECURITY_SSH_OK")
+                    _ = try await Probe.test(core:core,client:client)
+                    securityReport += "\n" + (try await securityRun("commit",index:index,tx:tx))
+                    securityPending[index]=""
+                } else if action == "rollback" {
+                    if securityPending[index].isEmpty { securityReport=try await securityRun("restore",index:index) }
+                    else { securityReport=try await securityRun("rollback",index:index,tx:securityPending[index]); securityPending[index]="" }
+                } else {
+                    securityReport=try await securityRun(action,index:index,options:options)
+                    if action == "audit", let data=securityReport.data(using:.utf8), let q=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any] { securityPending[index]=q["pending"] as? String ?? "" }
+                }
+                log("Безопасность · сервер \(index+1): \(action) завершено.")
+            } catch {
+                self.error=safeError(error)
+                securityReport="Ошибка: "+safeError(error)+"\nЕсли операция прервалась после изменений, сервер автоматически восстанавливает настройки через 240 секунд. Запустите аудит для проверки. Установленные пакеты сохраняются."
+                if action == "apply" || action == "rollback" { verified=false }
+                if (action == "apply" || action == "rollback"), !securityPending[index].isEmpty {
+                    if let result=try? await securityRun("rollback",index:index,tx:securityPending[index]) { securityReport += "\n"+result; securityPending[index]="" }
+                }
+            }
+        }
+    }
+    func securityChooseKey(create: Bool) {
+        if create {
+            let dialog=NSSavePanel(); dialog.title="Сохранить приватный SSH-ключ"; dialog.nameFieldStringValue="cascade-admin-ed25519"
+            guard dialog.runModal() == .OK, let url=dialog.url else { return }
+            guard !FileManager.default.fileExists(atPath:url.path), !FileManager.default.fileExists(atPath:url.path+".pub") else { error="Выберите новое имя: существующий ключ не перезаписывается."; return }
+            start("Создаём SSH-ключ на Mac…")
+            Task { defer { finish() }; do {
+                let r=try await Commands.run("/usr/bin/ssh-keygen",["-q","-t","ed25519","-N","","-C","Cascade administrator","-f",url.path])
+                guard r.status==0 else { throw CascadeError(r.error) }
+                securityKeyPath=url.path; securityKeyPass=""
+                securityReport="Ключ сохранён: \(url.path)\nСохраните резервную копию. Ключ без парольной фразы; приватный файл доступен только владельцу."
+            } catch { self.error=safeError(error) } }
+        } else {
+            let dialog=NSOpenPanel(); dialog.canChooseDirectories=false; dialog.allowsMultipleSelection=false; dialog.title="Приватный SSH-ключ Ed25519"
+            if dialog.runModal() == .OK, let url=dialog.url { securityKeyPath=url.path }
+        }
+    }
+    func securityUseKey(createAdmin: Bool) {
+        guard securityAvailable, !busy else { return }
+        let index=securityIndex, original=identities[securityIndex]
+        var server=original.server; server.user=securityAdmin; server.useKey=true; server.keyPath=securityKeyPath; server.secret=securityKeyPass
+        do { try server.validate(); guard server.user != "root" else { throw CascadeError("Выберите отдельного администратора с sudo.") } } catch { self.error=safeError(error); return }
+        start("Проверяем администратора и SSH-ключ…")
+        Task { defer { finish() }; do {
+            if createAdmin {
+                let pub=try await Commands.run("/usr/bin/ssh-keygen",["-y","-f",server.keyPath],environment:["SSH_ASKPASS":askpass,"SSH_ASKPASS_REQUIRE":"force","DISPLAY":"cascade:0","CASCADE_SSH_SECRET":server.secret])
+                guard pub.status==0 else { throw CascadeError("Не удалось прочитать ключ. "+pub.error) }
+                _ = try await securityRun("key",index:index,options:["admin":server.user,"publicKey":pub.output.trimmingCharacters(in:.whitespacesAndNewlines)])
+            }
+            let newIdentity=HostIdentity(server:server,knownHosts:original.knownHosts,fingerprint:original.fingerprint)
+            let r=try await SSH.run(newIdentity,script:"set -eu; test \"$(id -u)\" = 0; echo ADMIN_KEY_OK",askpass:askpass)
+            try require(r,marker:"ADMIN_KEY_OK")
+            identities[index]=newIdentity; diagnosticIdentities[index]=newIdentity
+            updatingSecurityIdentity=true
+            if index==0 { first=server } else { second=server }
+            updatingSecurityIdentity=false; securityKeyVerified[index]=true
+            securityReport="Вход отдельного администратора по ключу и sudo подтверждены. Доступы обновлены в памяти приложения. Сохраните ключ и имя администратора; используйте их при следующем запуске."
+        } catch { self.error=safeError(error); securityReport="Новый вход не подтверждён. Прежний SSH-доступ сохранён. "+safeError(error) } }
+    }
+
     func reset() {
+        securityKeyVerified=[false,false]; securityPending=["",""]; securityKeyPass=""
         identities = []; credentials = []; client = nil; core = nil; trusted = false; fingerprints = []
         first.secret = ""; second.secret = ""; stage = .editing; error = nil; events = []; verified = false; exportedPath = nil
         invalidateServer(0); invalidateServer(1)
@@ -502,6 +599,7 @@ struct ContentView: View {
                     if model.stage == .trust { trust }
                     if model.stage == .ready { ready }
                     if model.stage == .installed { result }
+                    if model.securityAvailable { SecurityPanel(model:model) }
                     macClient
                     if model.stage == .recovery {
                         Label("Установка не завершена. Нужна проверка отката.", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
@@ -538,7 +636,7 @@ struct ContentView: View {
     }
     var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 34)).foregroundStyle(mint).padding(.bottom, 14)
+            Image(nsImage: NSImage(contentsOf: (Bundle(url:Bundle.main.resourceURL!.appendingPathComponent("Cascade_CascadeMac.bundle")) ?? Bundle.module).url(forResource:"Cascade-brand",withExtension:"png")!)!).resizable().interpolation(.none).scaledToFit().frame(width:110,height:110).padding(.bottom,14)
             Text("CASCADE").font(.system(size: 21, weight: .bold, design: .rounded)).tracking(2)
             Text("by BadPaand").font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 6)
             VStack(alignment: .leading, spacing: 24) {
@@ -551,7 +649,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("IPv4 / IPv6 · VLESS · TLS").font(.system(size: 9, weight: .semibold)).tracking(0.5).foregroundStyle(mint)
                 Text("Два VPS. Один профиль.\nВыберите свою схему.").font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
-                Text("v0.4 · sing-box \(Config.version)").font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 14)
+                Text("v0.5 · sing-box \(Config.version)").font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 14)
             }
         }.padding(.horizontal, 26).padding(.top, 44).padding(.bottom, 28).frame(width: 228)
             .background(Color.black.opacity(0.20))

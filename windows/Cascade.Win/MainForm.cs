@@ -16,15 +16,16 @@ sealed class MainForm : Form
     readonly TextBox journal = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Height = 145, BackColor = Theme.Panel, ForeColor = Theme.Muted, BorderStyle = BorderStyle.None, Font = Theme.Font(9) };
     readonly Label activity = Theme.Label("", 10, false, Theme.Mint), result = Theme.Label("Профили появятся после установки или загрузки каскада.", 10, false, Theme.Muted);
     readonly Button prepare = Theme.Button("Проверить и подготовить", true), install = Theme.Button("Установить каскад", true), load = Theme.Button("Получить конфиги"), link = Theme.Button("Проверить связь между VPS"), tls = Theme.Button("Проверить TLS-сайт"), verify = Theme.Button("Сквозной тест"), rollback = Theme.Button("Откатить…"), add = Theme.Button("Создать профиль"), json = Theme.Button("JSON"), bpf = Theme.Button("BPF для iOS / SFM"), qr = Theme.Button("QR-код"), client = Theme.Button("Установить sing-box для Windows");
+    readonly Button security = Theme.Button("Безопасность серверов…");
     bool busy;
     public MainForm()
     {
-        Text = "Cascade · Windows 0.4"; ClientSize = new Size(1150, 980); MinimumSize = new Size(1040, 740); StartPosition = FormStartPosition.CenterScreen;
+        Text = "Cascade · Windows 0.5"; ClientSize = new Size(1150, 980); MinimumSize = new Size(1040, 740); StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background; ForeColor = Theme.Text; Font = Theme.Font(); AutoScaleMode = AutoScaleMode.Dpi;
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         var sidebar = new Panel { Dock = DockStyle.Left, Width = 205, BackColor = Color.FromArgb(10, 14, 17), Padding = new Padding(24, 35, 18, 25) };
         var brand = Theme.Label("CASCADE", 21, true, Theme.Mint); brand.Dock = DockStyle.Top;
-        var info = Theme.Label("by BadPaand\n\nДва сервера\nПроверка\nУстановка\nПрофили\n\nIPv4 / IPv6 · VLESS · AnyTLS · Naive\n\nWindows · 0.4.0", 10, false, Theme.Muted); info.Dock = DockStyle.Fill; info.Padding = new Padding(0, 55, 0, 0);
+        var info = Theme.Label("by BadPaand\n\nДва сервера\nПроверка\nУстановка\nПрофили\nБезопасность\n\nIPv4 / IPv6 · VLESS · AnyTLS · Naive\n\nWindows · 0.5.0", 10, false, Theme.Muted); info.Dock = DockStyle.Fill; info.Padding = new Padding(0, 55, 0, 0);
         sidebar.Controls.Add(info); sidebar.Controls.Add(brand); Controls.Add(content); Controls.Add(sidebar);
         content.Controls.Add(Theme.Label("Два сервера. Готовое подключение.", 25, true));
         content.Controls.Add(Theme.Label("Настройка собственных VPS, отдельные профили устройств и QR · IPv4 / IPv6, VLESS, AnyTLS, NaiveProxy.", 10, false, Theme.Muted));
@@ -48,7 +49,7 @@ sealed class MainForm : Form
         content.Controls.Add(Theme.Label("Подключение и устройства", 17, true)); content.Controls.Add(result);
         content.Controls.Add(Row(devices, json, bpf, qr)); deviceName.Width = 230; content.Controls.Add(Row(deviceName, add));
         content.Controls.Add(Theme.Label("Новому устройству выдаётся отдельный UUID. Входной сервис кратко перезапускается; старые профили сохраняются.", 9, false, Theme.Muted));
-        content.Controls.Add(Row(verify, rollback)); content.Controls.Add(journal);
+        content.Controls.Add(Row(verify, rollback, security)); content.Controls.Add(journal);
         content.Controls.Add(Theme.Label("SSH-доступы хранятся в памяти. Нет регистрации, телеметрии и облачного хранения конфигов.", 9, false, Theme.Muted));
         content.SizeChanged += (_, _) => ResizeContent(); Shown += (_, _) => ResizeContent();
         flow.Log = text => { if (InvokeRequired) BeginInvoke(() => Log(text)); else Log(text); };
@@ -64,6 +65,12 @@ sealed class MainForm : Form
         prepare.Click += async (_, _) => await Perform(async () => { SyncInputs(); for (var i = 0; i < 2; i++) if (map.Servers[i] != Phase.Passed) await Check(i); await flow.Prepare(false); Log("Все конфиги проверены. Можно установить каскад."); });
         load.Click += async (_, _) => await Perform(async () => { SyncInputs(); await flow.Prepare(true); entryScheme.LoadSettings(flow.EntrySettings); exitScheme.LoadSettings(flow.ExitSettings); sni.Text = flow.Sni; UpdateDevices(); await Verify(); });
         install.Click += async (_, _) => await Perform(async () => { SyncInputs(); await flow.Install(); UpdateDevices(); await Verify(); });
+        security.Click += (_, _) => {
+            if(busy || !flow.Installed)return;
+            busy=true;
+            try { using var form=new SecurityForm(flow); form.ShowDialog(this); for(var i=0;i<2;i++)servers[i].LoadSecurityIdentity(flow.SecurityServer(i)); }
+            finally { busy=false; RefreshState(); }
+        };
         verify.Click += async (_, _) => await Perform(Verify);
         rollback.Click += async (_, _) => { if (MessageBox.Show(this, "Восстановить предыдущую настройку обоих VPS? Выданные профили могут перестать работать.", "Откат", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) await Perform(async () => { await flow.Rollback(); map.Link = Phase.Idle; map.Detail = "Настройка отменена"; UpdateDevices(); }); };
         add.Click += async (_, _) => await Perform(async () => { var id = await flow.AddDevice(deviceName.Text); UpdateDevices(id); deviceName.Text = $"Устройство {flow.Devices.Count + 1}"; });
@@ -128,6 +135,7 @@ sealed class MainForm : Form
         link.Enabled = tls.Enabled = load.Enabled = !busy && flow.BothChecked;
         install.Enabled = !busy && flow.Prepared && !flow.Installed; verify.Enabled = add.Enabled = !busy && flow.Installed;
         json.Enabled = bpf.Enabled = qr.Enabled = !busy && devices.Items.Count > 0; rollback.Enabled = !busy && flow.CanRollback; client.Enabled = !busy;
+        security.Enabled = !busy && flow.Installed;
         map.Invalidate();
     }
 }

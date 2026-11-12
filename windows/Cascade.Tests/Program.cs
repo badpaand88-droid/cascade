@@ -67,6 +67,22 @@ await Test("shared deployment templates are fully substituted and Bash-valid", a
     }
     bool blocked = false; try { Scripts.Get("install", tx: "x;id"); } catch { blocked = true; } Check(blocked, "Transaction injection");
 });
+await Test("security payload, generated administrator key and workflow gates", async () =>
+{
+    var keyPath=Path.Combine(directory,"test-admin-"+Guid.NewGuid().ToString("N")+".pem");
+    try {
+        SecurityKeys.Create(keyPath);
+        using var key=new Renci.SshNet.PrivateKeyFile(keyPath);
+        Check(key.HostKeyAlgorithms.Any(x=>x.Name=="ssh-ed25519"),"Generated key incompatible with SSH.NET");
+        bool blocked=false;try { SecurityKeys.Create(keyPath); } catch(IOException) { blocked=true; } Check(blocked,"Existing key overwritten");
+        if(!OperatingSystem.IsWindows()) { var openssh=await NativeProcess.Run("/usr/bin/ssh-keygen",["-y","-f",keyPath]);Check(openssh.Code==0 && openssh.Output.StartsWith("ssh-ed25519 "),"Generated key incompatible with OpenSSH: "+openssh.Error); }
+        var q=ServerSecurity.Request("audit",new Server("2001:db8::1",2222,"admin","test"),"entry",["203.0.113.1"]);
+        q["publicKey"]="x'\n$(id)";
+        var script=ServerSecurity.Script(q);Check(!script.Contains("x'\n$(id)"),"Payload escaped into shell");
+        if(!OperatingSystem.IsWindows()) { var path=Path.Combine(directory,"security.sh");await File.WriteAllTextAsync(path,script);var syntax=await NativeProcess.Run("/bin/bash",["-n",path]);Check(syntax.Code==0,syntax.Error); }
+        var flow=new Workflow();blocked=false;try { await flow.SecurityRun("apply",0); } catch(InvalidOperationException) { blocked=true; }Check(blocked,"Security allowed before install");
+    } finally { File.Delete(keyPath); }
+});
 var binary = Environment.GetEnvironmentVariable("CASCADE_TEST_CORE");
 if (!string.IsNullOrEmpty(binary))
 {

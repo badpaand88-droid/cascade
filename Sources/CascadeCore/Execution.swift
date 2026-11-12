@@ -70,6 +70,7 @@ public enum PrivateFiles {
 }
 
 public struct HostIdentity: Sendable {
+    public init(server: Server, knownHosts: String, fingerprint: String) { self.server=server; self.knownHosts=knownHosts; self.fingerprint=fingerprint }
     public let server: Server
     public let knownHosts: String
     public let fingerprint: String
@@ -100,7 +101,7 @@ public enum SSH {
                     "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none"]
         if s.useKey { args += ["-i", s.keyPath, "-o", "IdentitiesOnly=yes", "-o", "PreferredAuthentications=publickey"] }
         else { args += ["-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password,keyboard-interactive"] }
-        args += [s.host, s.user == "root" || !privileged ? "exec /bin/bash -s" : "exec sudo -n /bin/bash -s"]
+        args += [s.host, s.user == "root" || !privileged ? "exec env CASCADE_CONNECTION=\"$SSH_CONNECTION\" /bin/bash -s" : "exec sudo -n env CASCADE_CONNECTION=\"$SSH_CONNECTION\" /bin/bash -s"]
         return try await Commands.run("/usr/bin/ssh", args, input: script,
             environment: ["SSH_ASKPASS": askpass, "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "cascade:0", "CASCADE_SSH_SECRET": s.secret], timeout: timeout)
     }

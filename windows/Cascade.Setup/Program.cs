@@ -21,10 +21,13 @@ sealed class SetupForm : Form
     bool busy, complete;
     public SetupForm()
     {
-        Text = "Установка Cascade · 0.4.0"; ClientSize = new Size(620, 390); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
+        Text = "Установка Cascade · 0.5.0"; ClientSize = new Size(620, 555); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(15, 20, 24); ForeColor = Color.Gainsboro; Font = new Font("Segoe UI", 10); Padding = new Padding(30);
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var brand = new PictureBox { Width = 140, Height = 140, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+        using (var imageStream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Cascade.Brand.png")!) using (var image=Image.FromStream(imageStream)) brand.Image=new Bitmap(image);
+        layout.Controls.Add(brand);
         layout.Controls.Add(new Label { Text = "CASCADE", Font = new Font("Segoe UI", 27, FontStyle.Bold), ForeColor = Color.FromArgb(130, 240, 198), AutoSize = true, Margin = new Padding(0, 0, 0, 15) });
         layout.Controls.Add(new Label { Text = "Два VPS. Проверка. Готовые профили подключения.", AutoSize = true, Margin = new Padding(0, 0, 0, 15) });
         layout.Controls.Add(new Label { Text = "Приложение установится только для текущего пользователя:\n" + Installation.Target + "\n\n.NET включён в установщик; отдельно устанавливать его не нужно.", Width = 545, Height = 100, ForeColor = Color.Silver });

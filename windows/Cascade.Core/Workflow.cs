@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 
 namespace Cascade.Core;
 
-public sealed class Workflow(CoreRuntime? runtime = null)
+public sealed partial class Workflow(CoreRuntime? runtime = null)
 {
     readonly CoreRuntime core = runtime ?? new();
     readonly Server?[] servers = new Server?[2];
@@ -34,6 +34,7 @@ public sealed class Workflow(CoreRuntime? runtime = null)
     }
     public void Invalidate(int index)
     {
+        SecurityKeyVerified[index]=false; securityPending[index]="";
         authenticated[index] = false; pins[index] = null; Prepared = false; Installed = false;
         Devices = []; transaction = "";
     }

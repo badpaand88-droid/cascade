@@ -6,8 +6,8 @@ let package = Package(name: "Cascade", platforms: [.macOS(.v14)], products: [
     .library(name: "CascadeCore", targets: ["CascadeCore"])
 ], targets: [
     .systemLibrary(name: "CZlib"),
-    .target(name: "CascadeCore", dependencies: ["CZlib"]),
-    .executableTarget(name: "CascadeMac", dependencies: ["CascadeCore"], resources: [.copy("Resources/askpass.sh")]),
+    .target(name: "CascadeCore", dependencies: ["CZlib"], resources: [.copy("Resources/security.py")]),
+    .executableTarget(name: "CascadeMac", dependencies: ["CascadeCore"], resources: [.copy("Resources/askpass.sh"), .copy("Resources/Cascade-brand.png")]),
     .executableTarget(name: "CascadeTemplateExporter", dependencies: ["CascadeCore"], path: "script/template-export"),
     .testTarget(name: "CascadeCoreTests", dependencies: ["CascadeCore"]),
     .testTarget(name: "CascadeMacTests", dependencies: ["CascadeMac"])
